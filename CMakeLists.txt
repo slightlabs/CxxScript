@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(CxxScript VERSION 1.0 LANGUAGES CXX)
+project(CxxScript VERSION 1.0.0 LANGUAGES CXX)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
@@ -9,6 +9,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
+# Options let consumers (e.g. Conan, downstream CMake projects) build just the
+# library without pulling in GoogleTest or building the example binaries.
+option(CXXSCRIPT_BUILD_TESTS "Build the CxxScript test suite" ON)
+option(CXXSCRIPT_BUILD_EXAMPLES "Build the CxxScript example/demo executables" ON)
+
 # Compiler flags
 if(MSVC)
     add_compile_options(/W4)
@@ -16,17 +21,19 @@ else()
     add_compile_options(-Wall -Wextra -O2)
 endif()
 
-# Fetch Google Test
-include(FetchContent)
-FetchContent_Declare(
-    googletest
-    GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG v1.14.0
-)
+if(CXXSCRIPT_BUILD_TESTS)
+    # Fetch Google Test
+    include(FetchContent)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.14.0
+    )
 
-# For Windows: Prevent overriding the parent project's compiler/linker settings
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googletest)
+    # For Windows: Prevent overriding the parent project's compiler/linker settings
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+endif()
 
 # Project structure
 set(INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -70,6 +77,7 @@ set_target_properties(CxxScript PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
 )
 
+if(CXXSCRIPT_BUILD_EXAMPLES)
 # Examples
 add_executable(example_usage ${EXAMPLES_DIR}/example_usage.cpp)
 target_link_libraries(example_usage PRIVATE CxxScript)
@@ -96,6 +104,15 @@ set_target_properties(demo_uninitialized PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+# Custom target to run example
+add_custom_target(run_example
+    COMMAND ${CMAKE_BINARY_DIR}/bin/example_usage
+    DEPENDS example_usage
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+endif()
+
+if(CXXSCRIPT_BUILD_TESTS)
 # Enable testing
 enable_testing()
 
@@ -210,13 +227,7 @@ add_custom_target(run_tests
     test_control_flow test_bitwise test_arrays test_external_variables
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
-
-# Custom target to run example
-add_custom_target(run_example
-    COMMAND ${CMAKE_BINARY_DIR}/bin/example_usage
-    DEPENDS example_usage
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-)
+endif()
 
 # Installation rules
 set(CXXSCRIPT_INSTALL_INCLUDEDIR "${CMAKE_INSTALL_INCLUDEDIR}/CxxScript")

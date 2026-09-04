@@ -1,6 +1,13 @@
 # CxxScript
 
+[![CI](https://github.com/slightlabs/CxxScript/actions/workflows/ci.yml/badge.svg)](https://github.com/slightlabs/CxxScript/actions/workflows/ci.yml)
+[![Deploy Docs](https://github.com/slightlabs/CxxScript/actions/workflows/deploy-docs.yml/badge.svg)](https://github.com/slightlabs/CxxScript/actions/workflows/deploy-docs.yml)
+[![Release](https://img.shields.io/github/v/release/slightlabs/CxxScript)](https://github.com/slightlabs/CxxScript/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 CxxScript is a modern C++ scripting engine that lets you write and execute `.script` files with multiple procedures.
+
+📖 **Full documentation and examples:** [slightlabs.github.io/CxxScript](https://slightlabs.github.io/CxxScript/)
 
 ## Quick Start
 
@@ -51,11 +58,17 @@ cd build && ctest
 ├── scripts/              # Script files and test data
 │   ├── example.script, demo_concat.script
 │   └── test_files/      # Test script modules
+├── docs/                 # MkDocs site source (published to GitHub Pages)
+├── .github/workflows/    # CI, auto-tag, release, and docs-deploy pipelines
+├── conanfile.py           # Conan 2.x package recipe
+├── test_package/          # Conan recipe smoke test
 ├── build/                # Build outputs (generated)
 │   ├── lib/             # libCxxScript.a
 │   ├── bin/             # Examples
 │   └── tests/           # Test executables
 ├── CMakeLists.txt       # Build configuration
+├── mkdocs.yml           # Documentation site configuration
+├── LICENSE              # MIT license
 └── Documentation files
     ├── README.md (this file)
     ├── ORGANIZED_STRUCTURE.md   # Detailed structure guide
@@ -372,6 +385,20 @@ cmake --build . --target run_example
 ./example_usage
 ```
 
+### CMake options
+
+| Option | Default | Description |
+|---|---|---|
+| `CXXSCRIPT_BUILD_TESTS` | `ON` | Build the GoogleTest suite (fetched via `FetchContent`) |
+| `CXXSCRIPT_BUILD_EXAMPLES` | `ON` | Build the example/demo executables |
+
+Turn both off when consuming CxxScript as a dependency (e.g. `add_subdirectory`, Conan) to skip
+GoogleTest and the demo binaries:
+
+```bash
+cmake -S . -B build -DCXXSCRIPT_BUILD_TESTS=OFF -DCXXSCRIPT_BUILD_EXAMPLES=OFF
+```
+
 ## Installation (development use)
 
 Install to standard locations (headers + static lib + scripts + CMake package config):
@@ -414,6 +441,30 @@ cmake --build build --target package
 ```
 
 Resulting packages contain the installed headers, library, scripts, and CMake config for downstream `find_package` usage.
+
+## Conan
+
+CxxScript also ships a Conan 2.x recipe (`conanfile.py`):
+
+```bash
+pip install "conan>=2.0"
+conan profile detect --force
+conan create . --build=missing
+```
+
+Consume it from another project:
+
+```ini
+# conanfile.txt
+[requires]
+cxxscript/1.0.0
+
+[generators]
+CMakeDeps
+CMakeToolchain
+```
+
+See [Building & Packaging → Conan](https://slightlabs.github.io/CxxScript/building/conan/) for details.
 
 ### Manual compilation (if needed):
 
@@ -497,4 +548,4 @@ Errors during execution include:
 
 ## License
 
-This is a complete implementation provided for your C++ application.
+Licensed under the [MIT License](LICENSE).

@@ -52,4 +52,8 @@ __pycache__/
 # Generated test includes from CTest
 /test_*[[]1[]]_include.cmake
 /test_*[[]1[]]_tests.cmake
+cmake_test_discovery_*.json
+
+# MkDocs build output
+/site/
 

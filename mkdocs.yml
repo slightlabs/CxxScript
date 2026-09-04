@@ -1,0 +1,63 @@
+site_name: CxxScript
+site_description: A modern, embeddable C++ scripting engine for running .script procedures from a host application.
+site_url: https://slightlabs.github.io/CxxScript/
+repo_url: https://github.com/slightlabs/CxxScript
+repo_name: slightlabs/CxxScript
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Language Guide:
+      - Syntax Overview: language/syntax.md
+      - Data Types & Arrays: language/data-types.md
+      - Operators: language/operators.md
+      - Control Flow: language/control-flow.md
+  - Examples:
+      - "1. Hello World": examples/01-hello-world.md
+      - "2. Control Flow & Loops": examples/02-control-flow.md
+      - "3. Arrays": examples/03-arrays.md
+      - "4. External Functions": examples/04-external-functions.md
+      - "5. External Variables": examples/05-external-variables.md
+      - "6. Multi-File Scripts": examples/06-multi-file.md
+      - "7. Real-World App": examples/07-real-world.md
+  - Embedding in C++: embedding.md
+  - Building & Packaging:
+      - CMake: building/cmake.md
+      - Conan: building/conan.md
+  - API Reference: api-reference.md
+  - Contributing: contributing.md

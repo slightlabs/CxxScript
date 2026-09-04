@@ -1,0 +1,54 @@
+name: Auto Tag
+
+# Automatically creates a new semantic-version tag for every commit that
+# lands on main once CI has passed. Pushing the tag triggers the Release
+# and Deploy Docs workflows.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Skip if commit is already tagged
+        id: check
+        run: |
+          if git describe --tags --exact-match HEAD 2>/dev/null; then
+            echo "already_tagged=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_tagged=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute next version
+        if: steps.check.outputs.already_tagged == 'false'
+        id: version
+        run: |
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          if [ -z "$latest" ]; then
+            new="v0.1.0"
+          else
+            IFS='.' read -r major minor patch <<< "${latest#v}"
+            new="v${major}.${minor}.$((patch + 1))"
+          fi
+          echo "tag=$new" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        if: steps.check.outputs.already_tagged == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "Release ${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
