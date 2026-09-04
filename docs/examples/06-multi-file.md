@@ -63,7 +63,7 @@ manager.executeProcedure("computeSquareSum",
 - External functions registered on the `ScriptManager` are available to **every** loaded file.
 - If two files define a procedure with the same name, the most recently loaded file wins; use
   `getProcedureInfo()` to check which file a procedure came from.
-- `manager.clear()` removes all loaded procedures but keeps registered external functions and
-  variables, so files can be reloaded without re-registering the host bindings.
+- `manager.clear()` resets interpreter state: loaded procedures, external functions, and external
+  variables are all removed, so host bindings must be re-registered before reuse.
 
 Next: [Example 7: Real-World App](07-real-world.md).

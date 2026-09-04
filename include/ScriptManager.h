@@ -111,6 +111,10 @@ public:
   // Clear all loaded scripts
   void clear();
 
+  // Optional execution guardrails (0 means unlimited)
+  void setExecutionLimits(size_t maxCallDepth, size_t maxSteps);
+  void clearExecutionLimits();
+
 private:
   std::unique_ptr<Interpreter> _interpreter;
   std::unordered_map<std::string, std::string>

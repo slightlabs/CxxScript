@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+  pull-requests: write
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -54,6 +58,74 @@ jobs:
 
       - name: Create Conan package
         run: conan create . --build=missing
+
+  sanitizers:
+    name: Sanitizers (ASan+UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure (sanitizers)
+        run: >
+          cmake -S . -B build-sanitizers
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build (sanitizers)
+        run: cmake --build build-sanitizers --config Debug -j 4
+
+      - name: Test (sanitizers)
+        working-directory: build-sanitizers
+        run: ctest --output-on-failure --build-config Debug
+
+  coverage:
+    name: Coverage (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install gcovr
+        run: pip install gcovr
+
+      - name: Configure (coverage)
+        run: >
+          cmake -S . -B build-coverage
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="--coverage -O0 -g"
+          -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+
+      - name: Build (coverage)
+        run: cmake --build build-coverage --config Debug -j 4
+
+      - name: Test (coverage)
+        working-directory: build-coverage
+        run: ctest --output-on-failure --build-config Debug
+
+      - name: Generate coverage report
+        run: >
+          gcovr
+          --root .
+          --filter /home/runner/work/CxxScript/CxxScript/src
+          --exclude '.*tests/.*'
+          --xml-pretty
+          --output build-coverage/coverage.xml
+          --html-details build-coverage/coverage.html
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            build-coverage/coverage.xml
+            build-coverage/coverage.html
 
   lint-docs:
     name: Build documentation site

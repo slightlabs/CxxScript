@@ -14,13 +14,14 @@ namespace Script {
 
 class RuntimeError : public std::runtime_error {
 public:
+  std::string filename;
   int line;
   int column;
   std::string procedureName;
 
-  RuntimeError(const std::string &message, int ln, int col,
-               const std::string &procName = "")
-      : std::runtime_error(message), line(ln), column(col),
+  RuntimeError(const std::string &message, const std::string &file, int ln,
+               int col, const std::string &procName = "")
+      : std::runtime_error(message), filename(file), line(ln), column(col),
         procedureName(procName) {}
 };
 
@@ -85,6 +86,10 @@ public:
   // Load a script (add procedures to the interpreter)
   void loadScript(ScriptPtr script);
 
+  // Optional execution guardrails (0 means unlimited)
+  void setExecutionLimits(size_t maxCallDepth, size_t maxSteps);
+  void clearExecutionLimits();
+
   // Execute a procedure by name
   Value executeProcedure(const std::string &name,
                          const std::vector<Value> &arguments);
@@ -124,15 +129,23 @@ private:
   };
 
   std::unordered_map<std::string, ProcedureDeclPtr> _procedures;
+  std::unordered_map<ProcedureDecl *, std::string> _procedureFiles;
   std::unordered_map<std::string, ExternalFunctionCallback> _externalFunctions;
   struct ExternalVariable {
     ExternalVariableGetter getter;
     ExternalVariableSetter setter;
   };
   std::unordered_map<std::string, ExternalVariable> _externalVariables;
+  Environment _globalEnv;
   Environment *_currentEnv;
   std::string _currentProcedure;
+  std::string _currentFile;
   uint64_t _callCacheVersion = 1;
+  size_t _maxCallDepth = 0;
+  size_t _maxSteps = 0;
+  size_t _currentCallDepth = 0;
+  size_t _currentSteps = 0;
+  bool _executionActive = false;
 
   // Evaluation methods
   Value evaluate(ExprPtr expr);
@@ -162,6 +175,7 @@ private:
   void executeIndexAssign(IndexAssignStmt *stmt);
 
   RuntimeError runtimeError(const std::string &message, int line, int column);
+  void consumeExecutionStep(int line, int column);
 
   // Type conversion for parameters
   Value convertToType(const Value &val, const TypeInfo &targetType);
