@@ -170,8 +170,8 @@ void Interpreter::Environment::exitScope() {
 
 // Interpreter Implementation
 Interpreter::Interpreter()
-    : _currentEnv(new Environment()), _currentProcedure(""),
-      _callCacheVersion(1) {}
+    : _globalEnv(nullptr), _currentEnv(&_globalEnv), _currentProcedure(""),
+      _currentFile(""), _callCacheVersion(1) {}
 
 void Interpreter::registerExternalFunction(const std::string &name,
                                            ExternalFunctionCallback callback) {
@@ -227,6 +227,7 @@ bool Interpreter::hasExternalVariable(const std::string &name) const {
 void Interpreter::loadScript(ScriptPtr script) {
   for (auto &proc : script->procedures) {
     _procedures[proc->name] = proc;
+    _procedureFiles[proc.get()] = script->filename;
   }
   ++_callCacheVersion;
 }
@@ -242,13 +243,22 @@ Value Interpreter::executeProcedure(const std::string &name,
 
 Value Interpreter::executeProcedure(ProcedureDeclPtr proc,
                                     const std::vector<Value> &arguments) {
+  std::string previousProcedure = _currentProcedure;
+  std::string previousFile = _currentFile;
   _currentProcedure = proc->name;
+  _currentFile = "";
+  auto fileIt = _procedureFiles.find(proc.get());
+  if (fileIt != _procedureFiles.end()) {
+    _currentFile = fileIt->second;
+  }
 
   // Check argument count
   if (arguments.size() != proc->parameters.size()) {
     std::stringstream ss;
     ss << "Procedure '" << proc->name << "' expects " << proc->parameters.size()
        << " arguments, got " << arguments.size();
+    _currentProcedure = previousProcedure;
+    _currentFile = previousFile;
     throw runtimeError(ss.str(), proc->line, proc->column);
   }
 
@@ -269,25 +279,33 @@ Value Interpreter::executeProcedure(ProcedureDeclPtr proc,
     // If we reach here, no return statement was executed
     if (proc->returnType.baseType == DataType::VOID && !proc->returnType.isArray) {
       _currentEnv = previousEnv;
-      _currentProcedure = "";
+      _currentProcedure = previousProcedure;
+      _currentFile = previousFile;
       return static_cast<int32_t>(0); // Dummy value
     }
 
     // Non-void procedure without return
     _currentEnv = previousEnv;
-    _currentProcedure = "";
+    _currentProcedure = previousProcedure;
+    _currentFile = previousFile;
     throw runtimeError("Non-void procedure must return a value", proc->line,
                        proc->column);
 
   } catch (const ReturnException &ret) {
     _currentEnv = previousEnv;
-    _currentProcedure = "";
+    _currentProcedure = previousProcedure;
+    _currentFile = previousFile;
 
     if (proc->returnType.baseType == DataType::VOID && !proc->returnType.isArray) {
       return static_cast<int32_t>(0); // Dummy value
     }
 
     return convertToType(ret.value, proc->returnType);
+  } catch (...) {
+    _currentEnv = previousEnv;
+    _currentProcedure = previousProcedure;
+    _currentFile = previousFile;
+    throw;
   }
 }
 
@@ -905,7 +923,7 @@ void Interpreter::executeContinue(ContinueStmt * /*stmt*/) {
 
 RuntimeError Interpreter::runtimeError(const std::string &message, int line,
                                        int column) {
-  return RuntimeError(message, line, column, _currentProcedure);
+  return RuntimeError(message, _currentFile, line, column, _currentProcedure);
 }
 
 Value Interpreter::convertToType(const Value &val, const TypeInfo &targetType) {

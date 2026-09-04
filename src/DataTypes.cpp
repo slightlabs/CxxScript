@@ -1,4 +1,5 @@
 #include "DataTypes.h"
+#include <limits>
 #include <stdexcept>
 
 namespace Script {
@@ -521,6 +522,47 @@ bool ValueHelper::logicalOr(const Value &a, const Value &b) {
 bool ValueHelper::logicalNot(const Value &a) { return !toBool(a); }
 
 namespace {
+bool isSignedIntegerType(DataType t) {
+  switch (t) {
+  case DataType::INT8:
+  case DataType::INT16:
+  case DataType::INT32:
+  case DataType::INT64:
+    return true;
+  default:
+    return false;
+  }
+}
+
+void ensureIntegerType(DataType t, const char *opName) {
+  switch (t) {
+  case DataType::INT8:
+  case DataType::UINT8:
+  case DataType::INT16:
+  case DataType::UINT16:
+  case DataType::INT32:
+  case DataType::UINT32:
+  case DataType::INT64:
+  case DataType::UINT64:
+    return;
+  default:
+    throw std::runtime_error(std::string("Operator ") + opName +
+                             " only supports integers");
+  }
+}
+
+void validateShiftAmount(const Value &rhs, DataType rhsType, const char *opName) {
+  if (isSignedIntegerType(rhsType) && ValueHelper::toInt64(rhs) < 0) {
+    throw std::runtime_error(std::string("Operator ") + opName +
+                             " requires a non-negative shift amount");
+  }
+  uint64_t amount = ValueHelper::toUInt64(rhs);
+  if (amount >= 64) {
+    throw std::runtime_error(std::string("Operator ") + opName +
+                             " shift amount must be in range [0, 63]");
+  }
+}
+
 template <typename Func>
 Value applyIntBinary(const Value &a, const Value &b, Func fn, const char *opName) {
   TypeInfo aType = ValueHelper::getType(a);
@@ -613,11 +655,60 @@ Value ValueHelper::bitXor(const Value &a, const Value &b) {
 }
 
 Value ValueHelper::lshift(const Value &a, const Value &b) {
-  return applyIntBinary(a, b, [](auto lhs, auto rhs) { return lhs << rhs; }, "<<");
+  TypeInfo aType = getType(a);
+  TypeInfo bType = getType(b);
+
+  if (aType.isArray || bType.isArray) {
+    throw std::runtime_error("Operator << does not support arrays");
+  }
+
+  ensureIntegerType(aType.baseType, "<<");
+  ensureIntegerType(bType.baseType, "<<");
+
+  validateShiftAmount(b, bType.baseType, "<<");
+  uint64_t amount = toUInt64(b);
+
+  bool lhsUnsigned =
+      aType.baseType == DataType::UINT8 || aType.baseType == DataType::UINT16 ||
+      aType.baseType == DataType::UINT32 || aType.baseType == DataType::UINT64;
+
+  if (lhsUnsigned) {
+    return createValue(DataType::UINT64, toUInt64(a) << amount);
+  }
+
+  int64_t lhs = toInt64(a);
+  if (lhs < 0) {
+    throw std::runtime_error("Operator << on negative signed values is not allowed");
+  }
+  if (amount > 0 &&
+      lhs > (std::numeric_limits<int64_t>::max() >> amount)) {
+    throw std::runtime_error("Operator << overflow for signed integer");
+  }
+  return createValue(DataType::INT64, lhs << amount);
 }
 
 Value ValueHelper::rshift(const Value &a, const Value &b) {
-  return applyIntBinary(a, b, [](auto lhs, auto rhs) { return lhs >> rhs; }, ">>");
+  TypeInfo aType = getType(a);
+  TypeInfo bType = getType(b);
+
+  if (aType.isArray || bType.isArray) {
+    throw std::runtime_error("Operator >> does not support arrays");
+  }
+
+  ensureIntegerType(aType.baseType, ">>");
+  ensureIntegerType(bType.baseType, ">>");
+
+  validateShiftAmount(b, bType.baseType, ">>");
+  uint64_t amount = toUInt64(b);
+
+  bool lhsUnsigned =
+      aType.baseType == DataType::UINT8 || aType.baseType == DataType::UINT16 ||
+      aType.baseType == DataType::UINT32 || aType.baseType == DataType::UINT64;
+
+  if (lhsUnsigned) {
+    return createValue(DataType::UINT64, toUInt64(a) >> amount);
+  }
+  return createValue(DataType::INT64, toInt64(a) >> amount);
 }
 
 ArrayPtr ValueHelper::createArray(const TypeInfo &elementType, const std::vector<Value> &elements) {

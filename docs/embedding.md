@@ -81,6 +81,6 @@ if (manager.executeProcedure("calculate", arguments, returnValue, errorMessage))
 | `registerExternalFunction(s)` / `unregisterExternalFunction` / `hasExternalFunction` | Manage host callbacks |
 | `registerExternalFunctionUnary<Ret, Arg>` / `registerExternalFunctionBinary<Ret, A1, A2>` | Typed helpers for common signatures |
 | `registerExternalVariable` / `registerExternalVariableReadOnly` / `unregisterExternalVariable` / `hasExternalVariable` | Expose host state |
-| `clear()` | Remove all loaded procedures (keeps external bindings) |
+| `clear()` | Reset interpreter state (removes loaded procedures and external bindings) |
 
 See the full [API Reference](api-reference.md) for type signatures.

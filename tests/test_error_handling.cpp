@@ -152,3 +152,31 @@ TEST(ErrorHandlingTest, SyntaxErrorReportsPosition) {
 
 }
 
+TEST(ErrorHandlingTest, TypeMismatchInVariableDeclarationReportsCompileError) {
+  std::string source = "int32 bad() {\n"
+                       "  int32 value = \"text\";\n"
+                       "  return value;\n"
+                       "}\n";
+
+  ScriptManager manager;
+  std::vector<CompilationError> errors;
+  bool success = manager.checkScriptSource(source, "type_mismatch.script", errors);
+
+  EXPECT_FALSE(success);
+  ASSERT_FALSE(errors.empty());
+  EXPECT_NE(errors[0].message.find("Type mismatch"), std::string::npos);
+}
+
+TEST(ErrorHandlingTest, TypeMismatchInReturnReportsCompileError) {
+  std::string source = "int32 badReturn() {\n"
+                       "  return \"abc\";\n"
+                       "}\n";
+
+  ScriptManager manager;
+  std::vector<CompilationError> errors;
+  bool success = manager.checkScriptSource(source, "return_mismatch.script", errors);
+
+  EXPECT_FALSE(success);
+  ASSERT_FALSE(errors.empty());
+  EXPECT_NE(errors[0].message.find("Type mismatch"), std::string::npos);
+}

@@ -18,15 +18,15 @@ manager.loadScriptFile("main.script", errors);
 Procedures can call procedures from other loaded files:
 
 **math_utils.script:**
-```
-proc add(a: int32, b: int32): int32 {
+```cpp
+int32 add(int32 a, int32 b) {
   return a + b;
 }
 ```
 
 **main_logic.script:**
-```
-proc computeSum(x: int32, y: int32): int32 {
+```cpp
+int32 computeSum(int32 x, int32 y) {
   return add(x, y);  // Calls add() from math_utils.script
 }
 ```
@@ -56,7 +56,7 @@ manager.clear();
 // Reload files
 manager.loadScriptFile("file1.script", errors);
 
-// External functions persist across clear/reload
+// Re-register external functions/variables after clear()
 ```
 
 ## API Methods
@@ -67,7 +67,7 @@ manager.loadScriptFile("file1.script", errors);
 - `getProcedureNames()` - Get all loaded procedure names
 - `getProcedureInfo(name)` - Get procedure details including source file
 - `executeProcedure(name, args, result, error)` - Execute a procedure
-- `clear()` - Remove all loaded procedures (keeps external functions)
+- `clear()` - Reset interpreter state (loaded procedures and external bindings)
 
 ### External Functions
 - `registerExternalFunction(name, callback)` - Add C++ function

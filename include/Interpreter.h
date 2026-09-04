@@ -14,13 +14,14 @@ namespace Script {
 
 class RuntimeError : public std::runtime_error {
 public:
+  std::string filename;
   int line;
   int column;
   std::string procedureName;
 
-  RuntimeError(const std::string &message, int ln, int col,
-               const std::string &procName = "")
-      : std::runtime_error(message), line(ln), column(col),
+  RuntimeError(const std::string &message, const std::string &file, int ln,
+               int col, const std::string &procName = "")
+      : std::runtime_error(message), filename(file), line(ln), column(col),
         procedureName(procName) {}
 };
 
@@ -124,14 +125,17 @@ private:
   };
 
   std::unordered_map<std::string, ProcedureDeclPtr> _procedures;
+  std::unordered_map<ProcedureDecl *, std::string> _procedureFiles;
   std::unordered_map<std::string, ExternalFunctionCallback> _externalFunctions;
   struct ExternalVariable {
     ExternalVariableGetter getter;
     ExternalVariableSetter setter;
   };
   std::unordered_map<std::string, ExternalVariable> _externalVariables;
+  Environment _globalEnv;
   Environment *_currentEnv;
   std::string _currentProcedure;
+  std::string _currentFile;
   uint64_t _callCacheVersion = 1;
 
   // Evaluation methods
