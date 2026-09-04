@@ -86,6 +86,10 @@ public:
   // Load a script (add procedures to the interpreter)
   void loadScript(ScriptPtr script);
 
+  // Optional execution guardrails (0 means unlimited)
+  void setExecutionLimits(size_t maxCallDepth, size_t maxSteps);
+  void clearExecutionLimits();
+
   // Execute a procedure by name
   Value executeProcedure(const std::string &name,
                          const std::vector<Value> &arguments);
@@ -137,6 +141,11 @@ private:
   std::string _currentProcedure;
   std::string _currentFile;
   uint64_t _callCacheVersion = 1;
+  size_t _maxCallDepth = 0;
+  size_t _maxSteps = 0;
+  size_t _currentCallDepth = 0;
+  size_t _currentSteps = 0;
+  bool _executionActive = false;
 
   // Evaluation methods
   Value evaluate(ExprPtr expr);
@@ -166,6 +175,7 @@ private:
   void executeIndexAssign(IndexAssignStmt *stmt);
 
   RuntimeError runtimeError(const std::string &message, int line, int column);
+  void consumeExecutionStep(int line, int column);
 
   // Type conversion for parameters
   Value convertToType(const Value &val, const TypeInfo &targetType);

@@ -96,12 +96,19 @@ public:
     void registerExternalFunctionBinary(const std::string &name,
                                         std::function<Ret(Arg1, Arg2)> fn);
 
+    void setExecutionLimits(size_t maxCallDepth, size_t maxSteps);
+    void clearExecutionLimits();
+
     void clear();
 };
 ```
 
 Typed helpers (`registerExternalFunctionUnary`/`Binary`) support `int32_t`, `double`, `bool`, and
 `std::string` for both arguments and return type.
+
+Execution guardrails are optional and disabled by default (`0` means unlimited):
+- `setExecutionLimits(maxCallDepth, maxSteps)` sets hard runtime caps.
+- `clearExecutionLimits()` removes the caps.
 
 ## Callback signatures
 

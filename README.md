@@ -270,7 +270,8 @@ Main class for managing scripts:
 - `registerExternalFunction(name, callback)` / `registerExternalFunctions({...})` / `unregisterExternalFunction(name)` - Bind or remove host callbacks (bulk registration supported)
 - Typed helpers: `registerExternalFunctionUnary` / `registerExternalFunctionBinary` for common primitive types
 - `registerExternalVariable(name, getter, setter)` / `registerExternalVariableReadOnly(name, getter)` / `unregisterExternalVariable(name)` - Expose host variables (read/write or read-only)
-- `clear()` - Clear all loaded scripts
+- `setExecutionLimits(maxCallDepth, maxSteps)` / `clearExecutionLimits()` - Optional runtime guardrails (`0` means unlimited)
+- `clear()` - Reset interpreter state (removes loaded procedures and external bindings)
 
 ### External Function Callback
 

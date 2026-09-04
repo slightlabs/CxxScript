@@ -832,4 +832,10 @@ void ScriptManager::clear() {
   _procedureFiles.clear();
 }
 
+void ScriptManager::setExecutionLimits(size_t maxCallDepth, size_t maxSteps) {
+  _interpreter->setExecutionLimits(maxCallDepth, maxSteps);
+}
+
+void ScriptManager::clearExecutionLimits() { _interpreter->clearExecutionLimits(); }
+
 } // namespace Script

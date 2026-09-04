@@ -232,13 +232,39 @@ void Interpreter::loadScript(ScriptPtr script) {
   ++_callCacheVersion;
 }
 
+void Interpreter::setExecutionLimits(size_t maxCallDepth, size_t maxSteps) {
+  _maxCallDepth = maxCallDepth;
+  _maxSteps = maxSteps;
+}
+
+void Interpreter::clearExecutionLimits() { setExecutionLimits(0, 0); }
+
 Value Interpreter::executeProcedure(const std::string &name,
                                     const std::vector<Value> &arguments) {
   auto it = _procedures.find(name);
   if (it == _procedures.end()) {
     throw std::runtime_error("Procedure not found: " + name);
   }
-  return executeProcedure(it->second, arguments);
+
+  bool topLevel = !_executionActive;
+  if (topLevel) {
+    _executionActive = true;
+    _currentCallDepth = 0;
+    _currentSteps = 0;
+  }
+
+  try {
+    Value out = executeProcedure(it->second, arguments);
+    if (topLevel) {
+      _executionActive = false;
+    }
+    return out;
+  } catch (...) {
+    if (topLevel) {
+      _executionActive = false;
+    }
+    throw;
+  }
 }
 
 Value Interpreter::executeProcedure(ProcedureDeclPtr proc,
@@ -252,6 +278,11 @@ Value Interpreter::executeProcedure(ProcedureDeclPtr proc,
     _currentFile = fileIt->second;
   }
 
+  if (_maxCallDepth > 0 && _currentCallDepth >= _maxCallDepth) {
+    _currentProcedure = previousProcedure;
+    _currentFile = previousFile;
+    throw runtimeError("Maximum call depth exceeded", proc->line, proc->column);
+  }
   // Check argument count
   if (arguments.size() != proc->parameters.size()) {
     std::stringstream ss;
@@ -261,6 +292,7 @@ Value Interpreter::executeProcedure(ProcedureDeclPtr proc,
     _currentFile = previousFile;
     throw runtimeError(ss.str(), proc->line, proc->column);
   }
+  ++_currentCallDepth;
 
   // Create new environment for procedure
   Environment procEnv(_currentEnv);
@@ -281,6 +313,7 @@ Value Interpreter::executeProcedure(ProcedureDeclPtr proc,
       _currentEnv = previousEnv;
       _currentProcedure = previousProcedure;
       _currentFile = previousFile;
+      --_currentCallDepth;
       return static_cast<int32_t>(0); // Dummy value
     }
 
@@ -297,14 +330,17 @@ Value Interpreter::executeProcedure(ProcedureDeclPtr proc,
     _currentFile = previousFile;
 
     if (proc->returnType.baseType == DataType::VOID && !proc->returnType.isArray) {
+      --_currentCallDepth;
       return static_cast<int32_t>(0); // Dummy value
     }
 
+    --_currentCallDepth;
     return convertToType(ret.value, proc->returnType);
   } catch (...) {
     _currentEnv = previousEnv;
     _currentProcedure = previousProcedure;
     _currentFile = previousFile;
+    --_currentCallDepth;
     throw;
   }
 }
@@ -351,6 +387,8 @@ Value Interpreter::evaluate(ExprPtr expr) {
 }
 
 void Interpreter::execute(StmtPtr stmt) {
+  consumeExecutionStep(stmt->line, stmt->column);
+
   if (auto *exprStmt = dynamic_cast<ExpressionStmt *>(stmt.get())) {
     executeExpression(exprStmt);
   } else if (auto *varDecl = dynamic_cast<VarDeclStmt *>(stmt.get())) {
@@ -924,6 +962,17 @@ void Interpreter::executeContinue(ContinueStmt * /*stmt*/) {
 RuntimeError Interpreter::runtimeError(const std::string &message, int line,
                                        int column) {
   return RuntimeError(message, _currentFile, line, column, _currentProcedure);
+}
+
+void Interpreter::consumeExecutionStep(int line, int column) {
+  if (_maxSteps == 0) {
+    return;
+  }
+
+  ++_currentSteps;
+  if (_currentSteps > _maxSteps) {
+    throw runtimeError("Maximum execution steps exceeded", line, column);
+  }
 }
 
 Value Interpreter::convertToType(const Value &val, const TypeInfo &targetType) {
