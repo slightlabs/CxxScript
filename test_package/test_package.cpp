@@ -1,6 +1,8 @@
 // Minimal consumer used by `conan create .` to verify the CxxScript package
 // installs and links correctly.
-#include "ScriptManager.h"
+// Installed headers live under <prefix>/include/CxxScript, so consumers of the
+// packaged/installed library include them with the "CxxScript/" prefix.
+#include "CxxScript/ScriptManager.h"
 
 #include <iostream>
 

@@ -8,6 +8,11 @@ cmake_install.cmake
 CTestTestfile.cmake
 Testing/
 Makefile
+
+# Conan test_package build output
+/test_package/build/
+/test_package/CMakeUserPresets.json
+
 cmake-build-
 *.ninja
 *.ninja_log
