@@ -1,6 +1,7 @@
 # CxxScript
 
 [![CI](https://github.com/slightlabs/CxxScript/actions/workflows/ci.yml/badge.svg)](https://github.com/slightlabs/CxxScript/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/slightlabs/CxxScript/actions/workflows/codeql.yml/badge.svg)](https://github.com/slightlabs/CxxScript/actions/workflows/codeql.yml)
 [![Deploy Docs](https://github.com/slightlabs/CxxScript/actions/workflows/deploy-docs.yml/badge.svg)](https://github.com/slightlabs/CxxScript/actions/workflows/deploy-docs.yml)
 [![Release](https://img.shields.io/github/v/release/slightlabs/CxxScript)](https://github.com/slightlabs/CxxScript/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -78,6 +79,20 @@ cd build && ctest
 ```
 
 See [ORGANIZED_STRUCTURE.md](ORGANIZED_STRUCTURE.md) for detailed structure documentation.
+
+## Security & Hardening
+
+- **Bounded execution (opt-in)**: `ScriptManager::setExecutionLimits(maxCallDepth, maxSteps)` caps
+  recursion depth and total execution steps so a malformed or malicious script fails with a
+  runtime error instead of crashing or hanging the host process. Disabled by default (`0` =
+  unlimited) — see [Hardening](https://slightlabs.github.io/CxxScript/embedding/#hardening-bound-untrusted-scripts).
+- **CI coverage**: every push/PR is built and tested on Linux/macOS/Windows, plus dedicated Linux
+  jobs for AddressSanitizer+UBSan, coverage, and Conan packaging, and a weekly
+  [CodeQL](.github/workflows/codeql.yml) static analysis scan.
+- **Hardened build flags**: stack-smashing protection (`-fstack-protector-strong` / `/sdl`), and
+  Linux builds additionally enable `_FORTIFY_SOURCE=2`, full RELRO, and PIE.
+- Found a vulnerability? Please see [SECURITY.md](SECURITY.md) and open a private security
+  advisory rather than a public issue.
 
 ## Script Syntax
 

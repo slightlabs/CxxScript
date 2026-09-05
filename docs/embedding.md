@@ -85,3 +85,21 @@ if (manager.executeProcedure("calculate", arguments, returnValue, errorMessage))
 | `clear()` | Reset interpreter state (removes loaded procedures and external bindings) |
 
 See the full [API Reference](api-reference.md) for type signatures.
+
+## Hardening: bound untrusted scripts
+
+`setExecutionLimits` is **disabled by default** (`0` = unlimited). If your host executes scripts
+from a semi-trusted source (config files, business rules authored by non-developers, etc.), set
+explicit bounds so a malformed or malicious script fails with a runtime error instead of
+overflowing the native call stack or hanging the process:
+
+```cpp
+ScriptManager manager;
+manager.setExecutionLimits(/*maxCallDepth=*/200, /*maxSteps=*/2'000'000);
+```
+
+Both limits apply per top-level `executeProcedure` call and are shared across the whole call tree,
+so recursion combined with looping still counts against the same budget. Exceeding either limit
+surfaces as an ordinary failed `executeProcedure` call — check `errorMessage` as usual. Call
+`clearExecutionLimits()` to remove the caps again.
+

@@ -16,14 +16,23 @@ option(CXXSCRIPT_BUILD_EXAMPLES "Build the CxxScript example/demo executables" O
 
 # Compiler flags
 if(MSVC)
-    add_compile_options(/W4)
+    add_compile_options(/W4 /sdl /guard:cf)
 else()
-    add_compile_options(-Wall -Wextra)
+    add_compile_options(-Wall -Wextra -fstack-protector-strong)
     add_compile_options(
         "$<$<CONFIG:Debug>:-O0;-g3>"
         "$<$<CONFIG:RelWithDebInfo>:-O2;-g>"
         "$<$<CONFIG:Release>:-O3>"
     )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # Harden against common memory-corruption exploitation techniques:
+        # buffer-overflow checks (_FORTIFY_SOURCE), full RELRO, and PIE.
+        # _FORTIFY_SOURCE needs an optimization level > 0, which every
+        # non-Debug config above already provides.
+        add_compile_definitions("$<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>")
+        add_compile_options(-fPIE)
+        add_link_options(-pie -Wl,-z,relro,-z,now)
+    endif()
 endif()
 
 if(CXXSCRIPT_BUILD_TESTS)

@@ -29,7 +29,7 @@ cd build && ctest --output-on-failure
 The docs live under `docs/` and are built with [MkDocs Material](https://squidfunk.github.io/mkdocs-material/).
 
 ```bash
-pip install mkdocs-material
+pip install -r docs/requirements.txt
 mkdocs serve   # live preview at http://127.0.0.1:8000
 ```
 
