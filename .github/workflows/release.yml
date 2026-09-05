@@ -38,7 +38,7 @@ jobs:
         run: tar -czf CxxScript-${{ github.ref_name }}-${{ matrix.os }}.tar.gz -C install-${{ matrix.os }} .
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: CxxScript-${{ matrix.os }}
           path: CxxScript-${{ github.ref_name }}-${{ matrix.os }}.tar.gz
