@@ -1,0 +1,4 @@
+sources:
+  "0.1.5":
+    url: "https://github.com/slightlabs/CxxScript/archive/refs/tags/v0.1.5.tar.gz"
+    sha256: "9f93a63697a8b5de428a834f9bc93b0b765cdb76c508121a6a923218ab8ee229"

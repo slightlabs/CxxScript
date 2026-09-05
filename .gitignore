@@ -12,6 +12,8 @@ Makefile
 # Conan test_package build output
 /test_package/build/
 /test_package/CMakeUserPresets.json
+/recipes/cxxscript/all/test_package/build/
+/recipes/cxxscript/all/test_package/CMakeUserPresets.json
 
 cmake-build-
 *.ninja

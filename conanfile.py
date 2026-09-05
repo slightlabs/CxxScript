@@ -5,7 +5,7 @@ from conan.tools.files import copy
 
 class CxxScriptConan(ConanFile):
     name = "cxxscript"
-    version = "1.0.0"
+    version = "0.1.5"
     package_type = "library"
 
     license = "MIT"
