@@ -8,13 +8,50 @@
 | `int16`, `uint16` | 16-bit signed / unsigned integer |
 | `int32`, `uint32` | 32-bit signed / unsigned integer |
 | `int64`, `uint64` | 64-bit signed / unsigned integer |
-| `double` | Double-precision floating point |
+| `float` | Single-precision (32-bit) floating point |
+| `double` | Double-precision (64-bit) floating point |
+| `char` | A single character, written with single quotes, e.g. `'a'` |
 | `string` | UTF-8 text |
 | `bool` | `true` / `false` |
 
+### `float` vs `double`
+
+`float` and `double` behave the same way except for precision/width. Mixing them promotes to
+`double` (the wider type); mixing either with an integer promotes to that floating type:
+
+```cpp
+float half(int32 n) {
+    return n / 2.0; // 2.0 is a double literal, but the result converts back to float
+}
+
+double combine(float a, double b) {
+    return a + b; // float + double -> double
+}
+```
+
+`%` (modulo) is not supported on `float`/`double`, same as before.
+
+### `char`
+
+`char` literals use single quotes and support the same escape sequences as strings (`\'`, `\"`,
+`\\`, `\n`, `\t`, `\r`, `\0`). A `char` compares and converts like a small integer (its code point),
+but concatenates as the literal character rather than its numeric code:
+
+```cpp
+bool isUpper(char c) { return c >= 'A' && c <= 'Z'; }
+
+string gradeMessage(char grade) {
+    return "Grade: " + grade; // "Grade: A", not "Grade: 65"
+}
+
+int32 nextCode(char c) { return c + 1; } // promotes to int32, e.g. 'a' -> 98
+char nextChar(char c) { return c + 1; }  // stays char, e.g. 'a' -> 'b'
+```
+
 ## Arrays
 
-Any scalar type can be turned into a typed array by appending `[]`, e.g. `int32[]`, `string[]`.
+Any scalar type can be turned into a typed array by appending `[]`, e.g. `int32[]`, `string[]`,
+`float[]`, `char[]`.
 
 ```cpp
 int32 arraysDemo(int32 x) {

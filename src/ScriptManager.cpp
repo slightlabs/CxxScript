@@ -15,8 +15,8 @@ struct InferredType {
 };
 
 bool isSignedInteger(DataType t) {
-  return t == DataType::INT8 || t == DataType::INT16 || t == DataType::INT32 ||
-         t == DataType::INT64;
+  return t == DataType::CHAR || t == DataType::INT8 || t == DataType::INT16 ||
+         t == DataType::INT32 || t == DataType::INT64;
 }
 
 bool isUnsignedInteger(DataType t) {
@@ -26,7 +26,9 @@ bool isUnsignedInteger(DataType t) {
 
 bool isInteger(DataType t) { return isSignedInteger(t) || isUnsignedInteger(t); }
 
-bool isNumeric(DataType t) { return isInteger(t) || t == DataType::DOUBLE; }
+bool isNumeric(DataType t) {
+  return isInteger(t) || t == DataType::FLOAT || t == DataType::DOUBLE;
+}
 
 bool canConvertCompileTime(const TypeInfo &from, const TypeInfo &to) {
   if (from == to) {
@@ -378,9 +380,11 @@ private:
       switch (un->op) {
       case UnaryExpr::Operator::NEGATE:
         if (!operand.type.isArray && isNumeric(operand.type.baseType)) {
-          return operand.type.baseType == DataType::DOUBLE
-                     ? InferredType{true, TypeInfo(DataType::DOUBLE)}
-                     : InferredType{true, TypeInfo(DataType::INT32)};
+          if (operand.type.baseType == DataType::DOUBLE ||
+              operand.type.baseType == DataType::FLOAT) {
+            return InferredType{true, TypeInfo(operand.type.baseType)};
+          }
+          return InferredType{true, TypeInfo(DataType::INT32)};
         }
         emit("Unary '-' requires numeric operand", un->line, un->column);
         return {};
@@ -490,6 +494,10 @@ private:
       if (left.type.baseType == DataType::DOUBLE ||
           right.type.baseType == DataType::DOUBLE) {
         return {true, TypeInfo(DataType::DOUBLE)};
+      }
+      if (left.type.baseType == DataType::FLOAT ||
+          right.type.baseType == DataType::FLOAT) {
+        return {true, TypeInfo(DataType::FLOAT)};
       }
       if (isUnsignedInteger(left.type.baseType) ||
           isUnsignedInteger(right.type.baseType)) {

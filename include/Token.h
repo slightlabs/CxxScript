@@ -10,6 +10,7 @@ enum class TokenType {
     INT_LITERAL,
     FLOAT_LITERAL,
     STRING_LITERAL,
+    CHAR_LITERAL,
     TRUE,
     FALSE,
     
@@ -25,9 +26,11 @@ enum class TokenType {
     UINT32,
     INT64,
     UINT64,
+    FLOAT,
     DOUBLE,
     STRING,
     BOOL,
+    CHAR,
     VOID,
     SWITCH,
     CASE,
@@ -101,6 +104,7 @@ struct Token {
     int64_t intValue = 0;
     std::string stringValue;
     double doubleValue = 0.0;
+    char charValue = '\0';
     
     Token(TokenType t = TokenType::UNKNOWN, const std::string& lex = "", int ln = 0, int col = 0)
         : type(t), lexeme(lex), line(ln), column(col) {}

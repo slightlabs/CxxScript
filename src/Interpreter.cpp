@@ -538,13 +538,14 @@ Value Interpreter::evaluateUnary(UnaryExpr *expr) {
   Value operand = evaluate(expr->operand);
 
   switch (expr->op) {
-  case UnaryExpr::Operator::NEGATE:
-    if (ValueHelper::getType(operand).baseType == DataType::DOUBLE) {
-      return ValueHelper::createValue(DataType::DOUBLE,
-                                      -ValueHelper::toDouble(operand));
+  case UnaryExpr::Operator::NEGATE: {
+    DataType operandType = ValueHelper::getType(operand).baseType;
+    if (operandType == DataType::DOUBLE || operandType == DataType::FLOAT) {
+      return ValueHelper::createValue(operandType, -ValueHelper::toDouble(operand));
     }
     return ValueHelper::createValue(DataType::INT32,
                                     -ValueHelper::toInt64(operand));
+  }
   case UnaryExpr::Operator::LOGICAL_NOT:
     return ValueHelper::logicalNot(operand);
   case UnaryExpr::Operator::BIT_NOT:
@@ -702,6 +703,9 @@ void Interpreter::executeVarDecl(VarDeclStmt *stmt) {
       case DataType::INT64:
         value = static_cast<int64_t>(0);
         break;
+      case DataType::FLOAT:
+        value = static_cast<float>(0.0f);
+        break;
       case DataType::DOUBLE:
         value = static_cast<double>(0.0);
         break;
@@ -713,6 +717,9 @@ void Interpreter::executeVarDecl(VarDeclStmt *stmt) {
         break;
       case DataType::BOOL:
         value = false;
+        break;
+      case DataType::CHAR:
+        value = static_cast<char>(0);
         break;
       case DataType::VOID:
         value = static_cast<int32_t>(0);
@@ -1004,6 +1011,7 @@ Value Interpreter::convertToType(const Value &val, const TypeInfo &targetType) {
   }
 
   switch (targetType.baseType) {
+  case DataType::CHAR:
   case DataType::INT8:
   case DataType::INT16:
   case DataType::INT32:
@@ -1014,6 +1022,7 @@ Value Interpreter::convertToType(const Value &val, const TypeInfo &targetType) {
   case DataType::UINT32:
   case DataType::UINT64:
     return ValueHelper::createValue(targetType.baseType, ValueHelper::toUInt64(val));
+  case DataType::FLOAT:
   case DataType::DOUBLE:
     return ValueHelper::createValue(targetType.baseType, ValueHelper::toDouble(val));
   case DataType::STRING:

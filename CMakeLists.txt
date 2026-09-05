@@ -145,6 +145,8 @@ set(CXXSCRIPT_TEST_SOURCES
     test_bitwise
     test_arrays
     test_external_variables
+    test_float
+    test_char
 )
 
 set(CXXSCRIPT_TEST_TARGETS "")

@@ -3,7 +3,9 @@
 ## Arithmetic
 
 `+`, `-`, `*`, `/`, `%` with standard precedence. `%` (modulo) is integer-only; `+ - * /` also work
-on `double`.
+on `float`/`double` (mixing `float` and `double` promotes to `double`). `char` participates in
+arithmetic like a small integer (its code point), and `+` with a `char` and `string` concatenates
+the literal character.
 
 ```cpp
 int32 remainder(int32 a, int32 b) { return a % b; }
@@ -11,7 +13,7 @@ int32 remainder(int32 a, int32 b) { return a % b; }
 
 ## Bitwise (integers only)
 
-`&`, `|`, `^`, `~`, `<<`, `>>`
+`&`, `|`, `^`, `~`, `<<`, `>>` — `char` is treated as an integer here too (`float`/`double` are not).
 
 ```cpp
 int32 bitwiseDemo(int32 a, int32 b) {

@@ -31,7 +31,7 @@ manager.executeProcedure("factorial", {static_cast<int32_t>(5)}, result, error);
 
 | Category | Support |
 |---|---|
-| Scalar types | `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `double`, `string`, `bool` |
+| Scalar types | `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float`, `double`, `char`, `string`, `bool` |
 | Arrays | Typed arrays of any scalar, e.g. `int32[]`, with literals, indexing, `len()`, `push()`, `pop()` |
 | Operators | Arithmetic (`+ - * / %`), bitwise (`& \| ^ ~ << >>`), logical (`! && \|\|` with short-circuit) |
 | Control flow | `if/else`, `while`, `for`, `do-while`, `switch/case/default`, ternary `?:`, `break`/`continue` |

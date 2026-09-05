@@ -4,6 +4,19 @@
 
 namespace Script {
 
+namespace {
+bool isFloatingType(DataType t) {
+  return t == DataType::FLOAT || t == DataType::DOUBLE;
+}
+
+// When either operand is DOUBLE the result widens to DOUBLE; otherwise (both
+// FLOAT, or FLOAT mixed with an integer) the result stays FLOAT.
+DataType floatingResultType(DataType a, DataType b) {
+  return (a == DataType::DOUBLE || b == DataType::DOUBLE) ? DataType::DOUBLE
+                                                          : DataType::FLOAT;
+}
+} // namespace
+
 TypeInfo ValueHelper::getType(const Value &val) {
   if (std::holds_alternative<ArrayPtr>(val)) {
     ArrayPtr arr = std::get<ArrayPtr>(val);
@@ -12,6 +25,8 @@ TypeInfo ValueHelper::getType(const Value &val) {
     }
     return TypeInfo(arr->elementType, true);
   }
+  if (std::holds_alternative<char>(val))
+    return TypeInfo(DataType::CHAR);
   if (std::holds_alternative<int8_t>(val))
     return TypeInfo(DataType::INT8);
   if (std::holds_alternative<uint8_t>(val))
@@ -28,6 +43,8 @@ TypeInfo ValueHelper::getType(const Value &val) {
     return TypeInfo(DataType::INT64);
   if (std::holds_alternative<uint64_t>(val))
     return TypeInfo(DataType::UINT64);
+  if (std::holds_alternative<float>(val))
+    return TypeInfo(DataType::FLOAT);
   if (std::holds_alternative<double>(val))
     return TypeInfo(DataType::DOUBLE);
   if (std::holds_alternative<std::string>(val))
@@ -64,6 +81,9 @@ std::string ValueHelper::typeToString(const TypeInfo &type) {
   case DataType::UINT64:
     base = "uint64";
     break;
+  case DataType::FLOAT:
+    base = "float";
+    break;
   case DataType::DOUBLE:
     base = "double";
     break;
@@ -72,6 +92,9 @@ std::string ValueHelper::typeToString(const TypeInfo &type) {
     break;
   case DataType::BOOL:
     base = "bool";
+    break;
+  case DataType::CHAR:
+    base = "char";
     break;
   case DataType::VOID:
     base = "void";
@@ -100,12 +123,16 @@ TypeInfo ValueHelper::stringToType(const std::string &str) {
     return TypeInfo(DataType::INT64);
   if (str == "uint64")
     return TypeInfo(DataType::UINT64);
+  if (str == "float")
+    return TypeInfo(DataType::FLOAT);
   if (str == "double")
     return TypeInfo(DataType::DOUBLE);
   if (str == "string")
     return TypeInfo(DataType::STRING);
   if (str == "bool")
     return TypeInfo(DataType::BOOL);
+  if (str == "char")
+    return TypeInfo(DataType::CHAR);
   if (str == "void")
     return TypeInfo(DataType::VOID);
   throw std::runtime_error("Unknown type: " + str);
@@ -206,7 +233,10 @@ std::string ValueHelper::toString(const Value &val) {
           return arg;
         } else if constexpr (std::is_same_v<T, bool>) {
           return arg ? "true" : "false";
-        } else if constexpr (std::is_same_v<T, double>) {
+        } else if constexpr (std::is_same_v<T, char>) {
+          return std::string(1, arg);
+        } else if constexpr (std::is_same_v<T, double> ||
+                             std::is_same_v<T, float>) {
           return std::to_string(arg);
         } else if constexpr (std::is_same_v<T, ArrayPtr>) {
           return std::string("[array]");
@@ -229,9 +259,10 @@ Value ValueHelper::add(const Value &a, const Value &b) {
     return toString(a) + toString(b);
   }
 
-  if (aType.baseType == DataType::DOUBLE || bType.baseType == DataType::DOUBLE) {
+  if (isFloatingType(aType.baseType) || isFloatingType(bType.baseType)) {
+    DataType resultType = floatingResultType(aType.baseType, bType.baseType);
     double result = toDouble(a) + toDouble(b);
-    return createValue(DataType::DOUBLE, result);
+    return createValue(resultType, result);
   }
 
   // Unsigned operations
@@ -259,9 +290,10 @@ Value ValueHelper::subtract(const Value &a, const Value &b) {
     throw std::runtime_error("Operator - does not support arrays");
   }
 
-  if (aType.baseType == DataType::DOUBLE || bType.baseType == DataType::DOUBLE) {
+  if (isFloatingType(aType.baseType) || isFloatingType(bType.baseType)) {
+    DataType resultType = floatingResultType(aType.baseType, bType.baseType);
     double result = toDouble(a) - toDouble(b);
-    return createValue(DataType::DOUBLE, result);
+    return createValue(resultType, result);
   }
 
   if (aType.baseType == DataType::UINT8 || aType.baseType == DataType::UINT16 ||
@@ -287,9 +319,10 @@ Value ValueHelper::multiply(const Value &a, const Value &b) {
     throw std::runtime_error("Operator * does not support arrays");
   }
 
-  if (aType.baseType == DataType::DOUBLE || bType.baseType == DataType::DOUBLE) {
+  if (isFloatingType(aType.baseType) || isFloatingType(bType.baseType)) {
+    DataType resultType = floatingResultType(aType.baseType, bType.baseType);
     double result = toDouble(a) * toDouble(b);
-    return createValue(DataType::DOUBLE, result);
+    return createValue(resultType, result);
   }
 
   if (aType.baseType == DataType::UINT8 || aType.baseType == DataType::UINT16 ||
@@ -315,13 +348,14 @@ Value ValueHelper::divide(const Value &a, const Value &b) {
     throw std::runtime_error("Operator / does not support arrays");
   }
 
-  if (ta.baseType == DataType::DOUBLE || tb.baseType == DataType::DOUBLE) {
+  if (isFloatingType(ta.baseType) || isFloatingType(tb.baseType)) {
+    DataType resultType = floatingResultType(ta.baseType, tb.baseType);
     double divisor = toDouble(b);
     if (divisor == 0.0) {
       throw std::runtime_error("Division by zero");
     }
     double result = toDouble(a) / divisor;
-    return createValue(DataType::DOUBLE, result);
+    return createValue(resultType, result);
   }
 
   if (ta.baseType == DataType::UINT8 || ta.baseType == DataType::UINT16 ||
@@ -355,7 +389,7 @@ Value ValueHelper::modulo(const Value &a, const Value &b) {
     throw std::runtime_error("Operator % does not support arrays");
   }
 
-  if (ta.baseType == DataType::DOUBLE || tb.baseType == DataType::DOUBLE) {
+  if (isFloatingType(ta.baseType) || isFloatingType(tb.baseType)) {
     throw std::runtime_error("Modulo not supported for floating point");
   }
 
@@ -393,7 +427,7 @@ bool ValueHelper::greaterThan(const Value &a, const Value &b) {
       std::holds_alternative<std::string>(b)) {
     return std::get<std::string>(a) > std::get<std::string>(b);
   }
-  if (ta.baseType == DataType::DOUBLE || tb.baseType == DataType::DOUBLE) {
+  if (isFloatingType(ta.baseType) || isFloatingType(tb.baseType)) {
     return toDouble(a) > toDouble(b);
   }
   return toInt64(a) > toInt64(b);
@@ -409,7 +443,7 @@ bool ValueHelper::lessThan(const Value &a, const Value &b) {
       std::holds_alternative<std::string>(b)) {
     return std::get<std::string>(a) < std::get<std::string>(b);
   }
-  if (ta.baseType == DataType::DOUBLE || tb.baseType == DataType::DOUBLE) {
+  if (isFloatingType(ta.baseType) || isFloatingType(tb.baseType)) {
     return toDouble(a) < toDouble(b);
   }
   return toInt64(a) < toInt64(b);
@@ -425,7 +459,7 @@ bool ValueHelper::greaterOrEqual(const Value &a, const Value &b) {
       std::holds_alternative<std::string>(b)) {
     return std::get<std::string>(a) >= std::get<std::string>(b);
   }
-  if (ta.baseType == DataType::DOUBLE || tb.baseType == DataType::DOUBLE) {
+  if (isFloatingType(ta.baseType) || isFloatingType(tb.baseType)) {
     return toDouble(a) >= toDouble(b);
   }
   return toInt64(a) >= toInt64(b);
@@ -441,7 +475,7 @@ bool ValueHelper::lessOrEqual(const Value &a, const Value &b) {
       std::holds_alternative<std::string>(b)) {
     return std::get<std::string>(a) <= std::get<std::string>(b);
   }
-  if (ta.baseType == DataType::DOUBLE || tb.baseType == DataType::DOUBLE) {
+  if (isFloatingType(ta.baseType) || isFloatingType(tb.baseType)) {
     return toDouble(a) <= toDouble(b);
   }
   return toInt64(a) <= toInt64(b);
@@ -477,7 +511,7 @@ bool ValueHelper::equals(const Value &a, const Value &b) {
     return arraysEqual(std::get<ArrayPtr>(a), std::get<ArrayPtr>(b));
   }
 
-  if (ta.baseType == DataType::DOUBLE || tb.baseType == DataType::DOUBLE) {
+  if (isFloatingType(ta.baseType) || isFloatingType(tb.baseType)) {
     return toDouble(a) == toDouble(b);
   }
 
@@ -536,6 +570,7 @@ bool isSignedIntegerType(DataType t) {
 
 void ensureIntegerType(DataType t, const char *opName) {
   switch (t) {
+  case DataType::CHAR:
   case DataType::INT8:
   case DataType::UINT8:
   case DataType::INT16:
@@ -574,6 +609,7 @@ Value applyIntBinary(const Value &a, const Value &b, Func fn, const char *opName
 
   auto ensureInt = [&](DataType t) {
     switch (t) {
+    case DataType::CHAR:
     case DataType::INT8:
     case DataType::UINT8:
     case DataType::INT16:
@@ -614,6 +650,7 @@ Value ValueHelper::bitNot(const Value &a) {
 
   auto ensureInt = [&](DataType t) {
     switch (t) {
+    case DataType::CHAR:
     case DataType::INT8:
     case DataType::UINT8:
     case DataType::INT16:
@@ -754,6 +791,7 @@ Value ValueHelper::convertElement(const Value &val, const TypeInfo &target) {
   }
   DataType t = target.baseType;
   switch (t) {
+  case DataType::CHAR:
   case DataType::INT8:
   case DataType::INT16:
   case DataType::INT32:
@@ -764,6 +802,7 @@ Value ValueHelper::convertElement(const Value &val, const TypeInfo &target) {
   case DataType::UINT32:
   case DataType::UINT64:
     return createValue(t, toUInt64(val));
+  case DataType::FLOAT:
   case DataType::DOUBLE:
     return createValue(t, toDouble(val));
   case DataType::STRING:
@@ -778,6 +817,8 @@ Value ValueHelper::convertElement(const Value &val, const TypeInfo &target) {
 
 Value ValueHelper::createValue(DataType type, int64_t intVal) {
   switch (type) {
+  case DataType::CHAR:
+    return static_cast<char>(intVal);
   case DataType::INT8:
     return static_cast<int8_t>(intVal);
   case DataType::INT16:
@@ -786,6 +827,8 @@ Value ValueHelper::createValue(DataType type, int64_t intVal) {
     return static_cast<int32_t>(intVal);
   case DataType::INT64:
     return intVal;
+  case DataType::FLOAT:
+    return static_cast<float>(intVal);
   case DataType::DOUBLE:
     return static_cast<double>(intVal);
   case DataType::BOOL:
@@ -797,6 +840,8 @@ Value ValueHelper::createValue(DataType type, int64_t intVal) {
 
 Value ValueHelper::createValue(DataType type, uint64_t uintVal) {
   switch (type) {
+  case DataType::CHAR:
+    return static_cast<char>(uintVal);
   case DataType::UINT8:
     return static_cast<uint8_t>(uintVal);
   case DataType::UINT16:
@@ -805,6 +850,8 @@ Value ValueHelper::createValue(DataType type, uint64_t uintVal) {
     return static_cast<uint32_t>(uintVal);
   case DataType::UINT64:
     return uintVal;
+  case DataType::FLOAT:
+    return static_cast<float>(uintVal);
   case DataType::DOUBLE:
     return static_cast<double>(uintVal);
   default:
@@ -814,8 +861,11 @@ Value ValueHelper::createValue(DataType type, uint64_t uintVal) {
 
 Value ValueHelper::createValue(DataType type, double doubleVal) {
   switch (type) {
+  case DataType::FLOAT:
+    return static_cast<float>(doubleVal);
   case DataType::DOUBLE:
     return doubleVal;
+  case DataType::CHAR:
   case DataType::INT8:
   case DataType::INT16:
   case DataType::INT32:

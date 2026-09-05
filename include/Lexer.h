@@ -39,6 +39,7 @@ private:
   Token number();
   Token identifier();
   Token string();
+  Token character();
 
   bool isDigit(char c) const;
   bool isAlpha(char c) const;

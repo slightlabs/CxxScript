@@ -10,6 +10,7 @@
 namespace Script {
 
 enum class DataType {
+    CHAR,
     INT8,
     UINT8,
     INT16,
@@ -18,6 +19,7 @@ enum class DataType {
     UINT32,
     INT64,
     UINT64,
+    FLOAT,
     DOUBLE,
     STRING,
     BOOL,
@@ -41,6 +43,7 @@ struct TypeInfo {
 struct ArrayValue {
     DataType elementType;
     std::vector<std::variant<
+        char,
         int8_t,
         uint8_t,
         int16_t,
@@ -49,6 +52,7 @@ struct ArrayValue {
         uint32_t,
         int64_t,
         uint64_t,
+        float,
         double,
         std::string,
         bool,
@@ -59,6 +63,7 @@ using ArrayPtr = std::shared_ptr<ArrayValue>;
 
 // Variant to hold any script value
 using Value = std::variant<
+    char,
     int8_t,
     uint8_t,
     int16_t,
@@ -67,6 +72,7 @@ using Value = std::variant<
     uint32_t,
     int64_t,
     uint64_t,
+    float,
     double,
     std::string,
     bool,

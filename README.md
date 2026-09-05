@@ -26,7 +26,7 @@ cd build && ctest
 
 ## Features
 
-- **Multiple Data Types**: int8, uint8, int16, uint16, int32, uint32, int64, uint64, double, string, bool, and typed arrays of any scalar (e.g., `int32[]`).
+- **Multiple Data Types**: int8, uint8, int16, uint16, int32, uint32, int64, uint64, float, double, char, string, bool, and typed arrays of any scalar (e.g., `int32[]`, `char[]`).
 - **Arrays Built-ins**: array literals `[1,2,3]`, indexing `arr[0]`, mutation `arr[0] = 5`, `len(arr)`, `push(arr, value)` (returns new length), `pop(arr)` (returns last element, errors on empty).
 - **Arithmetic Operators**: +, -, *, /, % with proper precedence (modulo is integer-only; floating point uses +,-,*,/)
 - **Bitwise Operators**: &, |, ^, ~, <<, >> (integers only)

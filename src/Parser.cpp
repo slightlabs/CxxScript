@@ -94,9 +94,11 @@ void Parser::synchronize() {
     case TokenType::UINT32:
     case TokenType::INT64:
     case TokenType::UINT64:
+    case TokenType::FLOAT:
     case TokenType::DOUBLE:
     case TokenType::STRING:
     case TokenType::BOOL:
+    case TokenType::CHAR:
     case TokenType::VOID:
       return;
     default:
@@ -161,12 +163,16 @@ TypeInfo Parser::parseType() {
     base = DataType::INT64;
   else if (match({TokenType::UINT64}))
     base = DataType::UINT64;
+  else if (match({TokenType::FLOAT}))
+    base = DataType::FLOAT;
   else if (match({TokenType::DOUBLE}))
     base = DataType::DOUBLE;
   else if (match({TokenType::STRING}))
     base = DataType::STRING;
   else if (match({TokenType::BOOL}))
     base = DataType::BOOL;
+  else if (match({TokenType::CHAR}))
+    base = DataType::CHAR;
   else if (match({TokenType::VOID}))
     base = DataType::VOID;
   else
@@ -208,8 +214,9 @@ StmtPtr Parser::statement() {
       check(TokenType::INT16) || check(TokenType::UINT16) ||
       check(TokenType::INT32) || check(TokenType::UINT32) ||
       check(TokenType::INT64) || check(TokenType::UINT64) ||
-      check(TokenType::DOUBLE) ||
-      check(TokenType::STRING) || check(TokenType::BOOL)) {
+      check(TokenType::FLOAT) || check(TokenType::DOUBLE) ||
+      check(TokenType::STRING) || check(TokenType::BOOL) ||
+      check(TokenType::CHAR)) {
     return varDeclaration();
   }
 
@@ -366,8 +373,9 @@ StmtPtr Parser::forStatement() {
              check(TokenType::INT16) || check(TokenType::UINT16) ||
              check(TokenType::INT32) || check(TokenType::UINT32) ||
              check(TokenType::INT64) || check(TokenType::UINT64) ||
-             check(TokenType::DOUBLE) ||
-             check(TokenType::STRING) || check(TokenType::BOOL)) {
+             check(TokenType::FLOAT) || check(TokenType::DOUBLE) ||
+             check(TokenType::STRING) || check(TokenType::BOOL) ||
+             check(TokenType::CHAR)) {
     initializer = varDeclaration();
   } else {
     initializer = expressionStatement();
@@ -842,6 +850,12 @@ ExprPtr Parser::primary() {
   if (match({TokenType::STRING_LITERAL})) {
     Token token = previous();
     return std::make_shared<LiteralExpr>(token.stringValue, TypeInfo(DataType::STRING),
+                                         token.line, token.column);
+  }
+
+  if (match({TokenType::CHAR_LITERAL})) {
+    Token token = previous();
+    return std::make_shared<LiteralExpr>(token.charValue, TypeInfo(DataType::CHAR),
                                          token.line, token.column);
   }
 

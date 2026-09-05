@@ -55,9 +55,20 @@ string examples() {
 }
 ```
 
+## Character literals
+
+`char` literals use single quotes and support the same escape sequences as strings (`\'`, `\"`,
+`\\`, `\n`, `\t`, `\r`, `\0`):
+
+```cpp
+char newline() { return '\n'; }
+char letterA() { return 'A'; }
+```
+
 ## String concatenation
 
-The `+` operator concatenates a `string` with any scalar value, converting it automatically:
+The `+` operator concatenates a `string` with any scalar value, converting it automatically —
+a `char` concatenates as the literal character, not its numeric code:
 
 ```cpp
 string greetUser(string name, int32 age) {

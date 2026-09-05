@@ -20,9 +20,11 @@ void Lexer::initKeywords() {
   _keywords["uint32"] = TokenType::UINT32;
   _keywords["int64"] = TokenType::INT64;
   _keywords["uint64"] = TokenType::UINT64;
+  _keywords["float"] = TokenType::FLOAT;
   _keywords["double"] = TokenType::DOUBLE;
   _keywords["string"] = TokenType::STRING;
   _keywords["bool"] = TokenType::BOOL;
+  _keywords["char"] = TokenType::CHAR;
   _keywords["void"] = TokenType::VOID;
   _keywords["switch"] = TokenType::SWITCH;
   _keywords["case"] = TokenType::CASE;
@@ -79,6 +81,11 @@ Token Lexer::nextToken() {
   // String literals
   if (c == '"') {
     return string();
+  }
+
+  // Character literals
+  if (c == '\'') {
+    return character();
   }
 
   // Two-character operators
@@ -358,6 +365,72 @@ Token Lexer::string() {
   Token token = makeToken(TokenType::STRING_LITERAL, "\"" + value + "\"");
   token.column = startColumn;
   token.stringValue = value;
+  return token;
+}
+
+Token Lexer::character() {
+  int startColumn = _column - 1;
+
+  if (isAtEnd()) {
+    Token token = makeToken(TokenType::UNKNOWN, "'");
+    token.column = startColumn;
+    return token;
+  }
+
+  char value;
+  if (peek() == '\\') {
+    advance(); // skip backslash
+    char escaped = peek();
+
+    switch (escaped) {
+    case '\'':
+      value = '\'';
+      break; // Escaped single quote
+    case '"':
+      value = '"';
+      break; // Escaped double quote
+    case '\\':
+      value = '\\';
+      break; // Escaped backslash
+    case 'n':
+      value = '\n';
+      break; // Newline
+    case 't':
+      value = '\t';
+      break; // Tab
+    case 'r':
+      value = '\r';
+      break; // Carriage return
+    case '0':
+      value = '\0';
+      break; // Null character
+    default:
+      // Unknown escape sequence in a char literal is an error.
+      Token badToken = makeToken(TokenType::UNKNOWN, std::string("'\\") + escaped);
+      badToken.column = startColumn;
+      return badToken;
+    }
+    advance(); // consume the escaped character
+  } else if (peek() == '\'') {
+    // Empty char literal ''
+    Token token = makeToken(TokenType::UNKNOWN, "''");
+    token.column = startColumn;
+    return token;
+  } else {
+    value = advance();
+  }
+
+  if (peek() != '\'') {
+    // More than one character between quotes, or unterminated
+    Token token = makeToken(TokenType::UNKNOWN, std::string("'") + value);
+    token.column = startColumn;
+    return token;
+  }
+  advance(); // closing '
+
+  Token token = makeToken(TokenType::CHAR_LITERAL, std::string("'") + value + "'");
+  token.column = startColumn;
+  token.charValue = value;
   return token;
 }
 
