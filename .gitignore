@@ -61,6 +61,11 @@ __pycache__/
 /test_*[[]1[]]_tests.cmake
 cmake_test_discovery_*.json
 
+# Compiled test/example binaries checked in by accident
+/tests/test_*
+!/tests/test_*.cpp
+/test_escape
+
 # MkDocs build output
 /site/
 

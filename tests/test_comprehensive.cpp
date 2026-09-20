@@ -169,9 +169,9 @@ TEST(ComprehensiveTest, FloatingPointComparisonsAndAssignments) {
   EXPECT_NEAR(std::get<double>(result), 2.5, 1e-9);
 }
 
-TEST(ComprehensiveTest, FloatingPointModuloNotSupported) {
+TEST(ComprehensiveTest, FloatingPointModuloUsesFmod) {
 
-  std::string source = "double badMod(double a, double b) { return a % b; }";
+  std::string source = "double fmod_(double a, double b) { return a % b; }";
 
   ScriptManager manager;
   std::vector<CompilationError> errors;
@@ -181,9 +181,9 @@ TEST(ComprehensiveTest, FloatingPointModuloNotSupported) {
   std::string errorMsg;
   Value result;
 
-  success = manager.executeProcedure("badMod", {2.5, 1.0}, result, errorMsg);
-  EXPECT_FALSE(success);
-  EXPECT_NE(errorMsg.find("Modulo not supported for floating point"), std::string::npos);
+  success = manager.executeProcedure("fmod_", {2.5, 1.0}, result, errorMsg);
+  ASSERT_TRUE(success) << errorMsg;
+  EXPECT_DOUBLE_EQ(std::get<double>(result), 0.5);
 }
 
 TEST(ComprehensiveTest, FloatingPointPrecisionAndDivisionByZero) {

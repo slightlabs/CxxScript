@@ -32,6 +32,12 @@ private:
   static bool boolean(Interpreter &in, CallExpr *e, size_t i);
   static ArrayPtr array(Interpreter &in, CallExpr *e, size_t i);
 
+  // Re-wrap an engine error with call-site location. Fatal resource-limit
+  // errors pass through unchanged so scripts cannot swallow them.
+  [[noreturn]] static void rethrowCallError(Interpreter &in, CallExpr *e,
+                                            const std::exception &ex,
+                                            const char *prefix = nullptr);
+
   // Handlers
   static Value bLen(Interpreter &, CallExpr *);
   static Value bPush(Interpreter &, CallExpr *);

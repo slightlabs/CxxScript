@@ -4,6 +4,8 @@
 //   cxxscript run <file> [proc] [args...]   Load file and call proc (default main)
 //   cxxscript check <file>...               Compile-check files without running
 //   cxxscript eval '<statements>'           Evaluate top-level statements
+//   cxxscript fmt <file>... [-w]            Pretty-print (or rewrite with -w)
+//   cxxscript debug <file> [proc] [args...] Step-through debugger
 //   cxxscript                               Interactive REPL
 //
 // REPL commands:
@@ -13,12 +15,18 @@
 //   .load <file>     load a script file's procedures
 //   .reset           discard all state and start fresh
 
+#include "Formatter.h"
 #include "ScriptManager.h"
+#include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 using namespace Script;
 
@@ -106,6 +114,320 @@ int checkFiles(const std::vector<std::string> &files) {
     }
   }
   return rc;
+}
+
+// ---------------------------------------------------------------------------
+// fmt — canonical pretty-printer
+// ---------------------------------------------------------------------------
+
+int fmtFile(const std::string &file, bool write) {
+  std::ifstream in(file);
+  if (!in) {
+    std::cerr << "Cannot open: " << file << "\n";
+    return 1;
+  }
+  std::stringstream buf;
+  buf << in.rdbuf();
+  std::string source = buf.str();
+  try {
+    std::string formatted = Formatter::format(source, file);
+    if (write) {
+      if (formatted != source) {
+        std::ofstream out(file);
+        out << formatted;
+        std::cout << file << ": reformatted\n";
+      }
+    } else {
+      std::cout << formatted;
+    }
+  } catch (const ParseError &e) {
+    std::cerr << file << ":" << e.line << ":" << e.column << ": " << e.what()
+              << "\n";
+    return 1;
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// debug — interactive source-level debugger
+// ---------------------------------------------------------------------------
+
+// Drives the interpreter's per-statement debug hook. Stops at breakpoints
+// or when stepping, then reads commands from stdin until the user resumes.
+class CliDebugger {
+public:
+  CliDebugger(ScriptManager &mgr, const std::string &mainFile)
+      : _mgr(mgr), _mainFile(mainFile) {}
+
+  void run() {
+    _mgr.setDebugHook(
+        [this](const Interpreter::DebugContext &ctx) { onStatement(ctx); });
+  }
+
+  bool aborted() const { return _aborted; }
+
+private:
+  enum class Mode { Step, Next, Continue };
+  Mode _mode = Mode::Step; // stop at the very first statement
+  size_t _nextDepth = 0;
+  std::set<std::pair<std::string, int>> _breakpoints;
+  std::set<std::pair<std::string, int>> _stopOnce;
+  ScriptManager &_mgr;
+  std::string _mainFile;
+  bool _aborted = false;
+  const Interpreter::DebugContext *_ctx = nullptr;
+
+  static std::string normPath(const std::string &f) {
+    if (f.empty() || f.front() == '<') {
+      return f;
+    }
+    std::error_code ec;
+    auto abs = std::filesystem::absolute(f, ec);
+    return ec ? f : abs.lexically_normal().string();
+  }
+
+  bool shouldStop(const Interpreter::DebugContext &ctx) {
+    if (_aborted) {
+      return false;
+    }
+    switch (_mode) {
+    case Mode::Step:
+      return true;
+    case Mode::Next:
+      if (ctx.callDepth <= _nextDepth) {
+        return true;
+      }
+      break;
+    case Mode::Continue:
+      break;
+    }
+    return _breakpoints.count({normPath(ctx.filename), ctx.line}) > 0 ||
+           _stopOnce.count({normPath(ctx.filename), ctx.line}) > 0;
+  }
+
+  void printLocation(const Interpreter::DebugContext &ctx) {
+    std::cout << ctx.filename << ":" << ctx.line << " in " << ctx.procedure
+              << "\n";
+    const auto &lines = sourceLines(ctx.filename);
+    if (ctx.line >= 1 && ctx.line <= static_cast<int>(lines.size())) {
+      std::cout << "  " << ctx.line << " | " << lines[ctx.line - 1] << "\n";
+    }
+  }
+
+  const std::vector<std::string> &sourceLines(const std::string &file) {
+    auto it = _sources.find(file);
+    if (it != _sources.end()) {
+      return it->second;
+    }
+    std::vector<std::string> lines;
+    std::ifstream in(file);
+    std::string l;
+    while (std::getline(in, l)) {
+      lines.push_back(l);
+    }
+    return _sources.emplace(file, std::move(lines)).first->second;
+  }
+  std::unordered_map<std::string, std::vector<std::string>> _sources;
+
+  // Evaluate `expr` against the stopped frame's variable snapshot using a
+  // throwaway manager whose external variables expose the locals.
+  void printExpr(const std::string &expr) {
+    ScriptManager probe;
+    for (const auto &kv : _ctx->variables) {
+      Value captured = kv.second;
+      probe.registerExternalVariableReadOnly(
+          kv.first, [captured]() { return captured; });
+    }
+    Value result;
+    std::string error;
+    if (probe.evaluateSnippet("return (" + expr + ");", "<dbg>", result,
+                              error)) {
+      std::cout << "= " << ValueHelper::toString(result) << "\n";
+    } else {
+      std::cout << "error: " << error;
+      if (error.empty() || error.back() != '\n') {
+        std::cout << "\n";
+      }
+    }
+  }
+
+  void listContext(int center, const std::string &file) {
+    const auto &lines = sourceLines(file);
+    int lo = std::max(1, center - 2);
+    int hi = std::min(static_cast<int>(lines.size()), center + 2);
+    for (int i = lo; i <= hi; ++i) {
+      std::cout << (i == center ? ">" : " ") << " " << i << " | " << lines[i - 1]
+                << "\n";
+    }
+  }
+
+  void onStatement(const Interpreter::DebugContext &ctx) {
+    _ctx = &ctx;
+    std::string file = normPath(ctx.filename);
+    _stopOnce.erase({file, ctx.line}); // one-shot breakpoints consumed
+
+    if (!shouldStop(ctx)) {
+      return;
+    }
+    _mode = Mode::Continue; // after any stop, default to running
+
+    std::string cmdline;
+    while (true) {
+      printLocation(ctx);
+      std::cout << "(dbg) " << std::flush;
+      if (!std::getline(std::cin, cmdline)) {
+        _aborted = true;
+        return;
+      }
+      std::istringstream cs(cmdline);
+      std::string cmd;
+      cs >> cmd;
+      if (cmd == "c" || cmd == "continue") {
+        _mode = Mode::Continue;
+        return;
+      }
+      if (cmd == "s" || cmd == "step") {
+        _mode = Mode::Step;
+        return;
+      }
+      if (cmd == "n" || cmd == "next") {
+        _mode = Mode::Next;
+        _nextDepth = ctx.callDepth;
+        return;
+      }
+      if (cmd == "q" || cmd == "quit") {
+        _aborted = true;
+        return;
+      }
+      if (cmd == "b" || cmd == "break") {
+        std::string where;
+        cs >> where;
+        std::string targetFile = file;
+        int ln = 0;
+        auto colon = where.rfind(':');
+        if (colon != std::string::npos) {
+          targetFile = normPath(where.substr(0, colon));
+          ln = std::atoi(where.substr(colon + 1).c_str());
+        } else {
+          ln = std::atoi(where.c_str());
+        }
+        if (ln > 0) {
+          _breakpoints.insert({targetFile, ln});
+          std::cout << "breakpoint at " << targetFile << ":" << ln << "\n";
+        } else {
+          std::cout << "usage: b [file:]line\n";
+        }
+        continue;
+      }
+      if (cmd == "rb" || cmd == "clear") {
+        std::string where;
+        cs >> where;
+        int ln = std::atoi(where.c_str());
+        std::string targetFile = file;
+        auto colon = where.rfind(':');
+        if (colon != std::string::npos) {
+          targetFile = normPath(where.substr(0, colon));
+          ln = std::atoi(where.substr(colon + 1).c_str());
+        }
+        _breakpoints.erase({targetFile, ln});
+        continue;
+      }
+      if (cmd == "p" || cmd == "print") {
+        std::string expr;
+        std::getline(cs, expr);
+        expr.erase(0, expr.find_first_not_of(" \t"));
+        if (expr.empty()) {
+          std::cout << "usage: p <expr>\n";
+        } else {
+          printExpr(expr);
+        }
+        continue;
+      }
+      if (cmd == "locals") {
+        std::vector<std::string> names;
+        for (const auto &kv : ctx.variables) {
+          names.push_back(kv.first);
+        }
+        std::sort(names.begin(), names.end());
+        for (const auto &n : names) {
+          std::cout << "  " << n << " = "
+                    << ValueHelper::toString(ctx.variables.at(n)) << "\n";
+        }
+        continue;
+      }
+      if (cmd == "bt" || cmd == "where") {
+        for (size_t i = ctx.callStack.size(); i-- > 0;) {
+          std::cout << "  #" << (ctx.callStack.size() - 1 - i) << " "
+                    << ctx.callStack[i] << "\n";
+        }
+        continue;
+      }
+      if (cmd == "l" || cmd == "list") {
+        listContext(ctx.line, ctx.filename);
+        continue;
+      }
+      if (cmd == "h" || cmd == "help") {
+        std::cout
+            << "  s / step        execute the next statement (into calls)\n"
+               "  n / next        next statement, stepping over calls\n"
+               "  c / continue    run to the next breakpoint\n"
+               "  b [f:]line      set a breakpoint (current file default)\n"
+               "  rb [f:]line     remove a breakpoint\n"
+               "  p <expr>        evaluate an expression in this frame\n"
+               "  locals          list visible variables\n"
+               "  bt / where      show the call stack\n"
+               "  l / list        show source around the current line\n"
+               "  q / quit        abort execution\n";
+        continue;
+      }
+      if (cmd.empty()) {
+        continue; // re-prompt
+      }
+      std::cout << "unknown command '" << cmd << "' (h for help)\n";
+    }
+  }
+};
+
+int debugFile(const std::string &file, const std::string &proc,
+              const std::vector<std::string> &argStrings) {
+  ScriptManager manager;
+  std::vector<CompilationError> errors;
+  if (!manager.loadScriptFile(file, errors)) {
+    printErrors(errors);
+    return 1;
+  }
+  printErrors(errors); // warnings
+  if (!manager.hasProcedure(proc)) {
+    std::cerr << "Procedure not found: " << proc << "\n";
+    return 1;
+  }
+  std::vector<Value> args;
+  for (const auto &s : argStrings) {
+    args.push_back(parseArg(s));
+  }
+
+  CliDebugger dbg(manager, file);
+  dbg.run();
+  std::cout << "debugger attached — h for help\n";
+
+  Value result;
+  std::string error;
+  bool ok = manager.executeProcedure(proc, args, result, error);
+  manager.setDebugHook(nullptr);
+  if (!ok) {
+    std::cerr << error << "\n";
+    return 2;
+  }
+  if (dbg.aborted()) {
+    std::cout << "execution aborted\n";
+    return 0;
+  }
+  ScriptManager::ProcedureInfo info;
+  if (manager.getProcedureInfo(proc, info) &&
+      info.returnType.baseType != DataType::VOID) {
+    std::cout << ValueHelper::toString(result) << "\n";
+  }
+  return 0;
 }
 
 bool isReplCommand(const std::string &line) {
@@ -286,6 +608,8 @@ void usage(const char *argv0) {
       << "  " << argv0 << " run <file> [proc] [args...]\n"
       << "  " << argv0 << " check <file>...\n"
       << "  " << argv0 << " eval '<statements>'\n"
+      << "  " << argv0 << " fmt <file>... [-w]   (print or rewrite)\n"
+      << "  " << argv0 << " debug <file> [proc] [args...]\n"
       << "  " << argv0 << "               (interactive REPL)\n";
 }
 
@@ -331,6 +655,37 @@ int main(int argc, char **argv) {
     }
     std::cout << ValueHelper::toString(result) << "\n";
     return 0;
+  }
+  if (cmd == "fmt") {
+    if (argc < 3) {
+      usage(argv[0]);
+      return 3;
+    }
+    bool write = false;
+    int rc = 0;
+    for (int i = 2; i < argc; ++i) {
+      std::string a = argv[i];
+      if (a == "-w") {
+        write = true;
+      } else {
+        if (fmtFile(a, write) != 0) {
+          rc = 1;
+        }
+      }
+    }
+    return rc;
+  }
+  if (cmd == "debug") {
+    if (argc < 3) {
+      usage(argv[0]);
+      return 3;
+    }
+    std::string file = argv[2];
+    std::string proc = argc > 3 ? argv[3] : "main";
+    std::vector<std::string> args;
+    if (argc > 4)
+      args.assign(argv + 4, argv + argc);
+    return debugFile(file, proc, args);
   }
   if (cmd == "repl") {
     return repl();

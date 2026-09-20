@@ -36,6 +36,11 @@ void Lexer::initKeywords() {
   _keywords["const"] = TokenType::CONST;
   _keywords["import"] = TokenType::IMPORT;
   _keywords["struct"] = TokenType::STRUCT;
+  _keywords["try"] = TokenType::TRY;
+  _keywords["catch"] = TokenType::CATCH;
+  _keywords["throw"] = TokenType::THROW;
+  _keywords["finally"] = TokenType::FINALLY;
+  _keywords["enum"] = TokenType::ENUM;
   _keywords["if"] = TokenType::IF;
   _keywords["else"] = TokenType::ELSE;
   _keywords["while"] = TokenType::WHILE;

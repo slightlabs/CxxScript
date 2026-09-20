@@ -1,4 +1,6 @@
 #include "DataTypes.h"
+#include "AST.h"
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 
@@ -23,9 +25,17 @@ TypeInfo ValueHelper::getType(const Value &val) {
     if (!arr) {
       return TypeInfo(DataType::VOID, true);
     }
-    TypeInfo t = arr->elementType;
-    t.isArray = true;
-    return t;
+    return TypeInfo::arrayOf(arr->elementType);
+  }
+  if (std::holds_alternative<FuncPtr>(val)) {
+    FuncPtr fn = std::get<FuncPtr>(val);
+    if (!fn) {
+      return TypeInfo::opaqueFunction();
+    }
+    if (fn->procs.size() > 1) {
+      return TypeInfo::opaqueFunction();
+    }
+    return fn->signature();
   }
   if (std::holds_alternative<StructPtr>(val)) {
     StructPtr sv = std::get<StructPtr>(val);
@@ -71,6 +81,22 @@ TypeInfo ValueHelper::getType(const Value &val) {
 }
 
 std::string ValueHelper::typeToString(const TypeInfo &type) {
+  if (type.isFunction) {
+    std::string sig = "fn(";
+    for (size_t i = 0; i < type.paramTypes.size(); ++i) {
+      if (i > 0)
+        sig += ", ";
+      sig += typeToString(type.paramTypes[i]);
+    }
+    sig += ")";
+    if (type.retType) {
+      sig += "->" + typeToString(*type.retType);
+    }
+    return sig;
+  }
+  if (type.isArray && type.arrayElem) {
+    return typeToString(*type.arrayElem) + "[]";
+  }
   if (type.isStruct) {
     return type.structName + (type.isArray ? "[]" : "");
   }
@@ -181,6 +207,8 @@ int64_t ValueHelper::toInt64(const Value &val) {
           throw std::runtime_error("Cannot convert map to int64");
         } else if constexpr (std::is_same_v<T, StructPtr>) {
           throw std::runtime_error("Cannot convert struct to int64");
+        } else if constexpr (std::is_same_v<T, FuncPtr>) {
+          throw std::runtime_error("Cannot convert function to int64");
         } else {
           return static_cast<int64_t>(arg);
         }
@@ -207,6 +235,8 @@ uint64_t ValueHelper::toUInt64(const Value &val) {
           throw std::runtime_error("Cannot convert map to uint64");
         } else if constexpr (std::is_same_v<T, StructPtr>) {
           throw std::runtime_error("Cannot convert struct to uint64");
+        } else if constexpr (std::is_same_v<T, FuncPtr>) {
+          throw std::runtime_error("Cannot convert function to uint64");
         } else {
           return static_cast<uint64_t>(arg);
         }
@@ -231,6 +261,8 @@ double ValueHelper::toDouble(const Value &val) {
           throw std::runtime_error("Cannot convert map to double");
         } else if constexpr (std::is_same_v<T, StructPtr>) {
           throw std::runtime_error("Cannot convert struct to double");
+        } else if constexpr (std::is_same_v<T, FuncPtr>) {
+          throw std::runtime_error("Cannot convert function to double");
         } else {
           return static_cast<double>(arg);
         }
@@ -251,7 +283,10 @@ bool ValueHelper::toBool(const Value &val) {
           return arg;
         } else if constexpr (std::is_same_v<T, double>) {
           return arg != 0.0;
-        } else if constexpr (std::is_same_v<T, StructPtr>) {
+        } else if constexpr (std::is_same_v<T, StructPtr> ||
+                             std::is_same_v<T, FuncPtr>) {
+          return arg != nullptr;
+        } else if constexpr (std::is_same_v<T, MapPtr>) {
           return arg != nullptr;
         } else {
           return arg != 0;
@@ -260,9 +295,16 @@ bool ValueHelper::toBool(const Value &val) {
       val);
 }
 
-std::string ValueHelper::toString(const Value &val) {
+namespace {
+// Recursive core of ValueHelper::toString; depth-bounded so a cyclic
+// structure (only constructible via host-injected values) can't overflow
+// the native stack.
+std::string toStringDepth(const Value &val, int depth) {
+  if (depth > 64) {
+    return "..."; // truncated: probable cycle
+  }
   return std::visit(
-      [](auto &&arg) -> std::string {
+      [depth](auto &&arg) -> std::string {
         using T = std::decay_t<decltype(arg)>;
         if constexpr (std::is_same_v<T, std::string>) {
           return arg;
@@ -280,7 +322,7 @@ std::string ValueHelper::toString(const Value &val) {
           for (size_t i = 0; i < elems.size(); ++i) {
             if (i > 0)
               out += ", ";
-            out += toString(elems[i]);
+            out += toStringDepth(elems[i], depth + 1);
           }
           out += "]";
           return out;
@@ -292,7 +334,8 @@ std::string ValueHelper::toString(const Value &val) {
               if (!first)
                 out += ", ";
               first = false;
-              out += toString(kv.first) + ": " + toString(kv.second);
+              out += toStringDepth(kv.first, depth + 1) + ": " +
+                     toStringDepth(kv.second, depth + 1);
             }
           }
           out += "}";
@@ -311,15 +354,25 @@ std::string ValueHelper::toString(const Value &val) {
             if (!first)
               out += ", ";
             first = false;
-            out += name + ": " + toString(it->second);
+            out += name + ": " + toStringDepth(it->second, depth + 1);
           }
           out += "}";
           return out;
+        } else if constexpr (std::is_same_v<T, FuncPtr>) {
+          if (arg && !arg->displayName.empty()) {
+            return "<fn " + arg->displayName + ">";
+          }
+          return std::string("<fn>");
         } else {
           return std::to_string(arg);
         }
       },
       val);
+}
+} // namespace
+
+std::string ValueHelper::toString(const Value &val) {
+  return toStringDepth(val, 0);
 }
 
 Value ValueHelper::add(const Value &a, const Value &b) {
@@ -465,7 +518,12 @@ Value ValueHelper::modulo(const Value &a, const Value &b) {
   }
 
   if (isFloatingType(ta.baseType) || isFloatingType(tb.baseType)) {
-    throw std::runtime_error("Modulo not supported for floating point");
+    double divisor = toDouble(b);
+    if (divisor == 0.0) {
+      throw std::runtime_error("Modulo by zero");
+    }
+    DataType resultType = floatingResultType(ta.baseType, tb.baseType);
+    return createValue(resultType, std::fmod(toDouble(a), divisor));
   }
 
   if (ta.baseType == DataType::UINT8 || ta.baseType == DataType::UINT16 ||
@@ -492,72 +550,81 @@ Value ValueHelper::modulo(const Value &a, const Value &b) {
   return createValue(resultType, result);
 }
 
-bool ValueHelper::greaterThan(const Value &a, const Value &b) {
-  TypeInfo ta = getType(a);
-  TypeInfo tb = getType(b);
-  if (ta.isArray || tb.isArray) {
-    throw std::runtime_error("Comparison not supported for arrays");
-  }
-  if (std::holds_alternative<std::string>(a) &&
-      std::holds_alternative<std::string>(b)) {
-    return std::get<std::string>(a) > std::get<std::string>(b);
-  }
-  if (isFloatingType(ta.baseType) || isFloatingType(tb.baseType)) {
-    return toDouble(a) > toDouble(b);
-  }
-  return toInt64(a) > toInt64(b);
-}
-
-bool ValueHelper::lessThan(const Value &a, const Value &b) {
-  TypeInfo ta = getType(a);
-  TypeInfo tb = getType(b);
-  if (ta.isArray || tb.isArray) {
-    throw std::runtime_error("Comparison not supported for arrays");
-  }
-  if (std::holds_alternative<std::string>(a) &&
-      std::holds_alternative<std::string>(b)) {
-    return std::get<std::string>(a) < std::get<std::string>(b);
-  }
-  if (isFloatingType(ta.baseType) || isFloatingType(tb.baseType)) {
-    return toDouble(a) < toDouble(b);
-  }
-  return toInt64(a) < toInt64(b);
-}
-
-bool ValueHelper::greaterOrEqual(const Value &a, const Value &b) {
-  TypeInfo ta = getType(a);
-  TypeInfo tb = getType(b);
-  if (ta.isArray || tb.isArray) {
-    throw std::runtime_error("Comparison not supported for arrays");
-  }
-  if (std::holds_alternative<std::string>(a) &&
-      std::holds_alternative<std::string>(b)) {
-    return std::get<std::string>(a) >= std::get<std::string>(b);
-  }
-  if (isFloatingType(ta.baseType) || isFloatingType(tb.baseType)) {
-    return toDouble(a) >= toDouble(b);
-  }
-  return toInt64(a) >= toInt64(b);
-}
-
-bool ValueHelper::lessOrEqual(const Value &a, const Value &b) {
-  TypeInfo ta = getType(a);
-  TypeInfo tb = getType(b);
-  if (ta.isArray || tb.isArray) {
-    throw std::runtime_error("Comparison not supported for arrays");
-  }
-  if (std::holds_alternative<std::string>(a) &&
-      std::holds_alternative<std::string>(b)) {
-    return std::get<std::string>(a) <= std::get<std::string>(b);
-  }
-  if (isFloatingType(ta.baseType) || isFloatingType(tb.baseType)) {
-    return toDouble(a) <= toDouble(b);
-  }
-  return toInt64(a) <= toInt64(b);
-}
-
 namespace {
-bool arraysEqual(const ArrayPtr &lhs, const ArrayPtr &rhs) {
+
+// Three-way comparison: -1, 0, +1. Arrays compare lexicographically;
+// maps/structs/functions reject ordering. `depth` bounds recursion on
+// host-constructed cyclic structures.
+int compareValues(const Value &a, const Value &b, int depth) {
+  if (depth > 64) {
+    throw std::runtime_error(
+        "Comparison depth limit exceeded (cyclic structure?)");
+  }
+  bool aArr = ValueHelper::isArray(a);
+  bool bArr = ValueHelper::isArray(b);
+  if (aArr && bArr) {
+    const auto &ea = ValueHelper::arrayElements(a);
+    const auto &eb = ValueHelper::arrayElements(b);
+    size_t n = std::min(ea.size(), eb.size());
+    for (size_t i = 0; i < n; ++i) {
+      int c = compareValues(ea[i], eb[i], depth + 1);
+      if (c != 0) {
+        return c;
+      }
+    }
+    if (ea.size() != eb.size()) {
+      return ea.size() < eb.size() ? -1 : 1;
+    }
+    return 0;
+  }
+  if (aArr != bArr) {
+    throw std::runtime_error("Cannot order array against non-array");
+  }
+  if (ValueHelper::isMap(a) || ValueHelper::isMap(b) ||
+      ValueHelper::isStruct(a) || ValueHelper::isStruct(b) ||
+      std::holds_alternative<FuncPtr>(a) ||
+      std::holds_alternative<FuncPtr>(b)) {
+    throw std::runtime_error(
+        "Ordering comparison not supported for this type");
+  }
+  if (std::holds_alternative<std::string>(a) &&
+      std::holds_alternative<std::string>(b)) {
+    const auto &sa = std::get<std::string>(a);
+    const auto &sb = std::get<std::string>(b);
+    return sa < sb ? -1 : (sa > sb ? 1 : 0);
+  }
+  TypeInfo ta = ValueHelper::getType(a);
+  TypeInfo tb = ValueHelper::getType(b);
+  if (isFloatingType(ta.baseType) || isFloatingType(tb.baseType)) {
+    double da = ValueHelper::toDouble(a);
+    double db = ValueHelper::toDouble(b);
+    return da < db ? -1 : (da > db ? 1 : 0);
+  }
+  // Mixed signed/unsigned compares via double to stay correct at extremes.
+  bool aUns = ta.baseType == DataType::UINT8 || ta.baseType == DataType::UINT16 ||
+              ta.baseType == DataType::UINT32 || ta.baseType == DataType::UINT64;
+  bool bUns = tb.baseType == DataType::UINT8 || tb.baseType == DataType::UINT16 ||
+              tb.baseType == DataType::UINT32 || tb.baseType == DataType::UINT64;
+  if (aUns && bUns) {
+    uint64_t ua = ValueHelper::toUInt64(a);
+    uint64_t ub = ValueHelper::toUInt64(b);
+    return ua < ub ? -1 : (ua > ub ? 1 : 0);
+  }
+  if (aUns != bUns) {
+    double da = static_cast<double>(aUns ? ValueHelper::toUInt64(a)
+                                         : ValueHelper::toInt64(a));
+    double db = static_cast<double>(bUns ? ValueHelper::toUInt64(b)
+                                         : ValueHelper::toInt64(b));
+    return da < db ? -1 : (da > db ? 1 : 0);
+  }
+  int64_t ia = ValueHelper::toInt64(a);
+  int64_t ib = ValueHelper::toInt64(b);
+  return ia < ib ? -1 : (ia > ib ? 1 : 0);
+}
+
+bool equalsDepth(const Value &a, const Value &b, int depth);
+
+bool arraysEqual(const ArrayPtr &lhs, const ArrayPtr &rhs, int depth) {
   if (!lhs || !rhs) {
     return lhs == rhs;
   }
@@ -568,17 +635,56 @@ bool arraysEqual(const ArrayPtr &lhs, const ArrayPtr &rhs) {
     return false;
   }
   for (size_t i = 0; i < lhs->elements.size(); ++i) {
-    if (!ValueHelper::equals(lhs->elements[i], rhs->elements[i])) {
+    if (!equalsDepth(lhs->elements[i], rhs->elements[i], depth + 1)) {
       return false;
     }
   }
   return true;
 }
+
+bool mapsEqual(const MapPtr &lhs, const MapPtr &rhs, int depth) {
+  if (!lhs || !rhs) {
+    return lhs == rhs;
+  }
+  if (lhs->entries.size() != rhs->entries.size()) {
+    return false;
+  }
+  for (const auto &kv : lhs->entries) {
+    auto it = rhs->entries.find(kv.first);
+    if (it == rhs->entries.end() ||
+        !equalsDepth(kv.second, it->second, depth + 1)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 } // namespace
 
-bool ValueHelper::equals(const Value &a, const Value &b) {
-  TypeInfo ta = getType(a);
-  TypeInfo tb = getType(b);
+bool ValueHelper::greaterThan(const Value &a, const Value &b) {
+  return compareValues(a, b, 0) > 0;
+}
+
+bool ValueHelper::lessThan(const Value &a, const Value &b) {
+  return compareValues(a, b, 0) < 0;
+}
+
+bool ValueHelper::greaterOrEqual(const Value &a, const Value &b) {
+  return compareValues(a, b, 0) >= 0;
+}
+
+bool ValueHelper::lessOrEqual(const Value &a, const Value &b) {
+  return compareValues(a, b, 0) <= 0;
+}
+
+namespace {
+bool equalsDepth(const Value &a, const Value &b, int depth) {
+  if (depth > 64) {
+    throw std::runtime_error(
+        "Equality depth limit exceeded (cyclic structure?)");
+  }
+  TypeInfo ta = ValueHelper::getType(a);
+  TypeInfo tb = ValueHelper::getType(b);
   if (ta.isStruct || tb.isStruct) {
     if (!ta.isStruct || !tb.isStruct || ta.structName != tb.structName) {
       return false;
@@ -593,7 +699,8 @@ bool ValueHelper::equals(const Value &a, const Value &b) {
     }
     for (const auto &kv : sa->fields) {
       auto it = sb->fields.find(kv.first);
-      if (it == sb->fields.end() || !equals(kv.second, it->second)) {
+      if (it == sb->fields.end() ||
+          !equalsDepth(kv.second, it->second, depth + 1)) {
         return false;
       }
     }
@@ -603,31 +710,71 @@ bool ValueHelper::equals(const Value &a, const Value &b) {
     if (!ta.isArray || !tb.isArray) {
       return false;
     }
-    return arraysEqual(std::get<ArrayPtr>(a), std::get<ArrayPtr>(b));
+    return arraysEqual(std::get<ArrayPtr>(a), std::get<ArrayPtr>(b), depth);
   }
-
+  if (ValueHelper::isMap(a) || ValueHelper::isMap(b)) {
+    if (!ValueHelper::isMap(a) || !ValueHelper::isMap(b)) {
+      return false;
+    }
+    return mapsEqual(std::get<MapPtr>(a), std::get<MapPtr>(b), depth);
+  }
+  if (std::holds_alternative<FuncPtr>(a) ||
+      std::holds_alternative<FuncPtr>(b)) {
+    if (!std::holds_alternative<FuncPtr>(a) ||
+        !std::holds_alternative<FuncPtr>(b)) {
+      return false;
+    }
+    const FuncPtr &fa = std::get<FuncPtr>(a);
+    const FuncPtr &fb = std::get<FuncPtr>(b);
+    if (!fa || !fb) {
+      return fa == fb;
+    }
+    // Two function values are equal iff they wrap the same target: the same
+    // lambda body with equal captures, or the same overload set with the
+    // same bound `this` (for methods).
+    if (fa->body.get() != fb->body.get() ||
+        fa->procs.size() != fb->procs.size() ||
+        fa->captured.size() != fb->captured.size()) {
+      return false;
+    }
+    for (size_t i = 0; i < fa->procs.size(); ++i) {
+      if (fa->procs[i].get() != fb->procs[i].get()) {
+        return false;
+      }
+    }
+    for (const auto &kv : fa->captured) {
+      auto it = fb->captured.find(kv.first);
+      if (it == fb->captured.end() ||
+          !equalsDepth(kv.second, it->second, depth + 1)) {
+        return false;
+      }
+    }
+    return true;
+  }
   if (isFloatingType(ta.baseType) || isFloatingType(tb.baseType)) {
-    return toDouble(a) == toDouble(b);
+    return ValueHelper::toDouble(a) == ValueHelper::toDouble(b);
   }
-
-  // String comparison requires both strings
-  if (std::holds_alternative<std::string>(a) || std::holds_alternative<std::string>(b)) {
-    if (!std::holds_alternative<std::string>(a) || !std::holds_alternative<std::string>(b)) {
+  if (std::holds_alternative<std::string>(a) ||
+      std::holds_alternative<std::string>(b)) {
+    if (!std::holds_alternative<std::string>(a) ||
+        !std::holds_alternative<std::string>(b)) {
       return false;
     }
     return std::get<std::string>(a) == std::get<std::string>(b);
   }
-
-  // Bool comparison requires both bools
   if (std::holds_alternative<bool>(a) || std::holds_alternative<bool>(b)) {
-    if (!std::holds_alternative<bool>(a) || !std::holds_alternative<bool>(b)) {
+    if (!std::holds_alternative<bool>(a) ||
+        !std::holds_alternative<bool>(b)) {
       return false;
     }
     return std::get<bool>(a) == std::get<bool>(b);
   }
+  return ValueHelper::toInt64(a) == ValueHelper::toInt64(b);
+}
+} // namespace
 
-  // Numeric comparison
-  return toInt64(a) == toInt64(b);
+bool ValueHelper::equals(const Value &a, const Value &b) {
+  return equalsDepth(a, b, 0);
 }
 
 bool ValueHelper::notEquals(const Value &a, const Value &b) {
@@ -844,9 +991,6 @@ Value ValueHelper::rshift(const Value &a, const Value &b) {
 }
 
 ArrayPtr ValueHelper::createArray(const TypeInfo &elementType, const std::vector<Value> &elements) {
-  if (elementType.isArray) {
-    throw std::runtime_error("Nested arrays are not supported");
-  }
   auto arr = std::make_shared<ArrayValue>();
   arr->elementType = elementType;
   arr->elements = elements;
@@ -936,7 +1080,32 @@ std::string ValueHelper::structTypeName(const Value &val) {
 
 Value ValueHelper::convertElement(const Value &val, const TypeInfo &target) {
   if (target.isArray) {
-    throw std::runtime_error("Nested arrays are not supported");
+    if (!isArray(val)) {
+      throw std::runtime_error("Expected array value");
+    }
+    ArrayPtr src = std::get<ArrayPtr>(val);
+    TypeInfo elemT = target.elementType();
+    if (src->elementType == elemT) {
+      return val;
+    }
+    std::vector<Value> out;
+    out.reserve(src->elements.size());
+    for (const auto &e : src->elements) {
+      out.push_back(convertElement(e, elemT));
+    }
+    return createArray(elemT, out);
+  }
+  if (target.isMap) {
+    if (!isMap(val)) {
+      throw std::runtime_error("Expected map value");
+    }
+    return val; // map entry conversion is the caller's concern
+  }
+  if (target.isFunction) {
+    if (std::holds_alternative<FuncPtr>(val)) {
+      return val;
+    }
+    throw std::runtime_error("Expected function value");
   }
   if (target.isStruct) {
     TypeInfo src = getType(val);

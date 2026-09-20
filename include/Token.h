@@ -52,6 +52,11 @@ enum class TokenType {
     CONST,
     IMPORT,
     STRUCT,
+    TRY,
+    CATCH,
+    THROW,
+    FINALLY,
+    ENUM,
     
     // Control Flow
     IF,

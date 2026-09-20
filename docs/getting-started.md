@@ -19,8 +19,16 @@ cmake --build build -j
 This produces:
 
 - `build/lib/libCxxScript.a` — the static library
+- `build/bin/cxxscript` — the CLI (`run`/`check`/`eval`/`fmt`/`debug`/REPL)
 - `build/bin/example_usage` and other demo executables
 - `build/tests/*` — the GoogleTest-based test executables
+
+Try the CLI on a script without writing any C++:
+
+```bash
+./build/bin/cxxscript eval 'return 6 * 7;'
+./build/bin/cxxscript run hello.script add 2 3
+```
 
 ## Run the tests
 

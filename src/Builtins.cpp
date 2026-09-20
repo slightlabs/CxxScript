@@ -6,6 +6,19 @@
 
 namespace Script {
 
+void Builtins::rethrowCallError(Interpreter &in, CallExpr *e,
+                                const std::exception &ex, const char *prefix) {
+  if (const auto *re = dynamic_cast<const RuntimeError *>(&ex);
+      re && re->fatal) {
+    throw *re;
+  }
+  std::string msg = ex.what();
+  if (prefix) {
+    msg = std::string(prefix) + msg;
+  }
+  throw in.runtimeError(msg, e->line, e->column);
+}
+
 bool Builtins::isBuiltin(const std::string &name) {
   return table().find(name) != table().end();
 }
@@ -105,7 +118,7 @@ int64_t Builtins::integer(Interpreter &in, CallExpr *e, size_t i) {
   try {
     return ValueHelper::toInt64(arg(in, e, i));
   } catch (const std::exception &ex) {
-    throw in.runtimeError(ex.what(), e->line, e->column);
+    rethrowCallError(in, e, ex);
   }
 }
 
@@ -113,7 +126,7 @@ double Builtins::real(Interpreter &in, CallExpr *e, size_t i) {
   try {
     return ValueHelper::toDouble(arg(in, e, i));
   } catch (const std::exception &ex) {
-    throw in.runtimeError(ex.what(), e->line, e->column);
+    rethrowCallError(in, e, ex);
   }
 }
 
@@ -164,13 +177,13 @@ Value Builtins::bPush(Interpreter &in, CallExpr *e) {
   try {
     converted = in.convertToType(raw, elemType);
   } catch (const std::exception &ex) {
-    throw in.runtimeError(ex.what(), e->line, e->column);
+    rethrowCallError(in, e, ex);
   }
   auto &elems = ValueHelper::arrayElements(arrVal);
   try {
     in.checkArraySize(elems.size() + 1);
   } catch (const std::exception &ex) {
-    throw in.runtimeError(ex.what(), e->line, e->column);
+    rethrowCallError(in, e, ex);
   }
   elems.push_back(converted);
   return static_cast<int32_t>(elems.size());
@@ -206,14 +219,14 @@ Value Builtins::bInsert(Interpreter &in, CallExpr *e) {
   try {
     in.checkArraySize(elems.size() + 1);
   } catch (const std::exception &ex) {
-    throw in.runtimeError(ex.what(), e->line, e->column);
+    rethrowCallError(in, e, ex);
   }
   TypeInfo elemType = ValueHelper::arrayElementType(arrVal);
   Value converted;
   try {
     converted = in.convertToType(arg(in, e, 2), elemType);
   } catch (const std::exception &ex) {
-    throw in.runtimeError(ex.what(), e->line, e->column);
+    rethrowCallError(in, e, ex);
   }
   elems.insert(elems.begin() + idx, converted);
   return static_cast<int32_t>(elems.size());
@@ -265,8 +278,7 @@ Value Builtins::bHas(Interpreter &in, CallExpr *e) {
   try {
     key = in.convertToType(key, m->keyType);
   } catch (const std::exception &ex) {
-    throw in.runtimeError(std::string("has: ") + ex.what(), e->line,
-                          e->column);
+    rethrowCallError(in, e, ex, "has: ");
   }
   return m->entries.find(key) != m->entries.end();
 }
@@ -283,8 +295,7 @@ Value Builtins::bRemove(Interpreter &in, CallExpr *e) {
   try {
     key = in.convertToType(key, m->keyType);
   } catch (const std::exception &ex) {
-    throw in.runtimeError(std::string("remove: ") + ex.what(), e->line,
-                          e->column);
+    rethrowCallError(in, e, ex, "remove: ");
   }
   return m->entries.erase(key) > 0;
 }
@@ -783,7 +794,7 @@ Value Builtins::bToInt(Interpreter &in, CallExpr *e) {
   try {
     return ValueHelper::toInt64(arg(in, e, 0));
   } catch (const std::exception &ex) {
-    throw in.runtimeError(ex.what(), e->line, e->column);
+    rethrowCallError(in, e, ex);
   }
 }
 
@@ -792,7 +803,7 @@ Value Builtins::bToUInt(Interpreter &in, CallExpr *e) {
   try {
     return ValueHelper::toUInt64(arg(in, e, 0));
   } catch (const std::exception &ex) {
-    throw in.runtimeError(ex.what(), e->line, e->column);
+    rethrowCallError(in, e, ex);
   }
 }
 
@@ -801,7 +812,7 @@ Value Builtins::bToDouble(Interpreter &in, CallExpr *e) {
   try {
     return ValueHelper::toDouble(arg(in, e, 0));
   } catch (const std::exception &ex) {
-    throw in.runtimeError(ex.what(), e->line, e->column);
+    rethrowCallError(in, e, ex);
   }
 }
 
@@ -810,7 +821,7 @@ Value Builtins::bToFloat(Interpreter &in, CallExpr *e) {
   try {
     return static_cast<float>(ValueHelper::toDouble(arg(in, e, 0)));
   } catch (const std::exception &ex) {
-    throw in.runtimeError(ex.what(), e->line, e->column);
+    rethrowCallError(in, e, ex);
   }
 }
 
@@ -838,7 +849,7 @@ Value Builtins::bToChar(Interpreter &in, CallExpr *e) {
   try {
     return static_cast<char>(ValueHelper::toInt64(v));
   } catch (const std::exception &ex) {
-    throw in.runtimeError(ex.what(), e->line, e->column);
+    rethrowCallError(in, e, ex);
   }
 }
 

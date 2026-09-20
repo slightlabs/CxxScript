@@ -178,29 +178,68 @@ public:
   // Per-statement debug hook (see Interpreter::DebugContext). nullptr clears.
   void setDebugHook(Interpreter::DebugHook cb);
 
+  // --- Sandbox controls for untrusted scripts ---
+  // When import roots are set, `import` paths must resolve inside one of
+  // them. When empty (default), imports may resolve anywhere.
+  void addImportRoot(const std::string &directory);
+  void clearImportRoots();
+  // Master switch for `import` statements (default enabled).
+  void setImportsEnabled(bool enabled);
+  // Disable/enable individual builtins by name. Disabled builtins resolve
+  // like undefined functions to scripts.
+  void disableBuiltin(const std::string &name);
+  void enableBuiltin(const std::string &name);
+  bool isBuiltinEnabled(const std::string &name) const;
+
+  // --- Parsed-AST cache ---
+  // When enabled, successfully parsed files are cached keyed by canonical
+  // path + source hash so recompiles skip lexing/parsing. Semantic
+  // validation still runs on every compile. Disabled by default.
+  void setAstCacheEnabled(bool enabled);
+  bool isAstCacheEnabled() const;
+  size_t astCacheSize() const;
+  void clearAstCache();
+
 private:
   std::unique_ptr<Interpreter> _interpreter;
   std::unordered_map<std::string, std::string>
       _procedureFiles; // procedure name -> filename
   std::unordered_map<std::string, std::string>
       _structFiles; // struct name -> filename
+  std::unordered_map<std::string, std::string>
+      _enumFiles; // enum name -> filename
   // variables declared by REPL snippets: name -> (type, isConst)
   std::unordered_map<std::string, std::pair<TypeInfo, bool>> _replGlobalTypes;
   std::unordered_set<std::string> _loadedFiles;  // canonical paths already loaded
   std::unordered_set<std::string> _loadingFiles; // in-progress (cycle detection)
+  std::vector<std::string> _importRoots; // canonical allowed import dirs
+  bool _importsEnabled = true;
+  bool _astCacheEnabled = false;
+  struct AstCacheEntry {
+    size_t sourceHash;
+    ScriptPtr script;
+  };
+  std::unordered_map<std::string, AstCacheEntry> _astCache; // path -> AST
 
   bool compileScript(const std::string &source, const std::string &filename,
                      std::vector<CompilationError> &errors, bool load,
                      std::vector<std::string> *loadedProcNames = nullptr);
 
-  // Struct type names visible while parsing `filename`: interpreter-loaded
-  // structs plus declarations inside (transitively) imported files.
+  // Struct/enum type names visible while parsing `filename`:
+  // interpreter-loaded decls plus declarations inside (transitively)
+  // imported files.
   std::unordered_set<std::string>
   knownStructNames(const std::string &filename,
                    const std::vector<Token> &tokens);
-  void collectStructNames(const std::string &filename,
-                          std::unordered_set<std::string> &out,
-                          std::unordered_set<std::string> &visited);
+  std::unordered_set<std::string>
+  knownEnumNames(const std::string &filename,
+                 const std::vector<Token> &tokens);
+  void collectTypeNames(const std::string &filename,
+                        std::unordered_set<std::string> &structs,
+                        std::unordered_set<std::string> &enums,
+                        std::unordered_set<std::string> &visited);
+  // True if `resolvedPath` is inside one of _importRoots (both canonical).
+  bool importPathAllowed(const std::string &resolvedPath) const;
 };
 
 // --- Inline implementations for typed helpers ---

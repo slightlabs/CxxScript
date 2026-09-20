@@ -1,0 +1,28 @@
+{
+  "name": "cxxscript",
+  "displayName": "CxxScript",
+  "description": "Syntax highlighting for the CxxScript language",
+  "version": "0.1.0",
+  "publisher": "slightlabs",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "cxxscript",
+        "aliases": ["CxxScript", "cxxscript"],
+        "extensions": [".cx", ".cxs", ".cxxs"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "cxxscript",
+        "scopeName": "source.cxxscript",
+        "path": "./syntaxes/cxxscript.tmLanguage.json"
+      }
+    ]
+  }
+}

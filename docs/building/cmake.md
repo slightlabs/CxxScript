@@ -12,12 +12,27 @@ cmake --build build -j
 | Option | Default | Description |
 |---|---|---|
 | `CXXSCRIPT_BUILD_TESTS` | `ON` | Build the GoogleTest suite (fetched via `FetchContent`) |
-| `CXXSCRIPT_BUILD_EXAMPLES` | `ON` | Build the example/demo executables |
+| `CXXSCRIPT_BUILD_EXAMPLES` | `ON` | Build the example/demo executables and `cxxscript` CLI |
+| `CXXSCRIPT_BUILD_FUZZERS` | `OFF` | Build libFuzzer harnesses for lexer/parser/script (requires Clang) |
+| `CXXSCRIPT_BUILD_BENCHMARKS` | `OFF` | Build the `cxxscript_bench` performance runner |
 
-Disable both when consuming CxxScript as a dependency to avoid pulling in GoogleTest:
+Disable extras when consuming CxxScript as a dependency to avoid pulling in GoogleTest:
 
 ```bash
 cmake -S . -B build -DCXXSCRIPT_BUILD_TESTS=OFF -DCXXSCRIPT_BUILD_EXAMPLES=OFF
+```
+
+## Fuzzing and benchmarks
+
+```bash
+# Fuzzing (needs clang/clang++)
+cmake -S . -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ -DCXXSCRIPT_BUILD_FUZZERS=ON
+cmake --build build-fuzz -j
+./build-fuzz/fuzz/fuzz_parser corpus/ -max_total_time=60
+
+# Benchmarks
+cmake -S . -B build -DCXXSCRIPT_BUILD_BENCHMARKS=ON
+cmake --build build -j && ./build/bin/cxxscript_bench
 ```
 
 ## Run tests

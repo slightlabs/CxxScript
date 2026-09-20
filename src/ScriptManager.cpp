@@ -44,6 +44,30 @@ bool canConvertCompileTime(const TypeInfo &from, const TypeInfo &to) {
   if (from == to) {
     return true;
   }
+  // `auto` accepts anything.
+  if (to.isAuto) {
+    return true;
+  }
+  // Function values convert only to function/auto targets; nothing else
+  // converts to a function type. When both signatures are fully specified,
+  // they must be call-compatible (same arity, param convertibility).
+  if (from.isFunction || to.isFunction) {
+    if (!from.isFunction || !to.isFunction) {
+      return false;
+    }
+    if (!to.fnOpaque && !from.fnOpaque) {
+      if (from.paramTypes.size() != to.paramTypes.size()) {
+        return false;
+      }
+      for (size_t i = 0; i < to.paramTypes.size(); ++i) {
+        if (!from.paramTypes[i].isAuto &&
+            !canConvertCompileTime(to.paramTypes[i], from.paramTypes[i])) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
   if (from.isArray != to.isArray || from.isMap != to.isMap) {
     return false;
   }
@@ -64,11 +88,12 @@ bool canConvertCompileTime(const TypeInfo &from, const TypeInfo &to) {
     return canConvertCompileTime(fromV, toV);
   }
   if (from.isArray) {
-    if (from.baseType == DataType::VOID && !from.isStruct) {
+    TypeInfo fromE = from.elementType();
+    if (fromE.baseType == DataType::VOID && !fromE.isArray &&
+        !fromE.isStruct) {
       return true; // empty [] literal converts to any array type
     }
-    return from.baseType == to.baseType && from.isStruct == to.isStruct &&
-           from.structName == to.structName;
+    return canConvertCompileTime(fromE, to.elementType());
   }
   // Structs convert only to the same struct type.
   if (from.isStruct || to.isStruct) {
@@ -98,6 +123,19 @@ bool canConvertCompileTime(const TypeInfo &from, const TypeInfo &to) {
 
 std::string typeName(const TypeInfo &type) { return ValueHelper::typeToString(type); }
 
+// Same signature = duplicate; different parameter lists = overload.
+bool sameSignature(const ProcedureDeclPtr &a, const ProcedureDeclPtr &b) {
+  if (a->parameters.size() != b->parameters.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < a->parameters.size(); ++i) {
+    if (!(a->parameters[i].type == b->parameters[i].type)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 class SemanticValidator {
 public:
   SemanticValidator(const std::string &filename, Interpreter *interpreter,
@@ -107,12 +145,26 @@ public:
   void validate(const ScriptPtr &script) {
     _procedures.clear();
     _structs.clear();
+    _enums.clear();
     for (const auto &proc : script->procedures) {
-      _procedures[proc->name] = proc;
+      _procedures[proc->name].push_back(proc);
+    }
+    for (const auto &e : script->enums) {
+      if (_enums.count(e->name) || _structs.count(e->name)) {
+        emit("Duplicate type name: " + e->name, e->line, e->column);
+      }
+      _enums[e->name] = e;
+      std::unordered_set<std::string> members;
+      for (const auto &m : e->members) {
+        if (!members.insert(m.first).second) {
+          emit("Duplicate member '" + m.first + "' in enum '" + e->name + "'",
+               e->line, e->column);
+        }
+      }
     }
     for (const auto &s : script->structs) {
-      if (_structs.count(s->name)) {
-        emit("Duplicate struct name: " + s->name, s->line, s->column);
+      if (_structs.count(s->name) || _enums.count(s->name)) {
+        emit("Duplicate type name: " + s->name, s->line, s->column);
       }
       if (_procedures.count(s->name) ||
           _interpreter->hasProcedure(s->name)) {
@@ -128,8 +180,26 @@ public:
     for (const auto &s : script->structs) {
       checkStructCycle(s);
     }
+    // Duplicate signatures within one file are hard errors (overloads are
+    // fine — parameter lists must differ).
+    for (const auto &kv : _procedures) {
+      for (size_t i = 0; i < kv.second.size(); ++i) {
+        for (size_t j = i + 1; j < kv.second.size(); ++j) {
+          if (sameSignature(kv.second[i], kv.second[j])) {
+            emit("Duplicate procedure signature: " + kv.first,
+                 kv.second[j]->line, kv.second[j]->column);
+          }
+        }
+      }
+    }
     for (const auto &proc : script->procedures) {
       validateProcedure(proc);
+    }
+    // Struct method bodies validate after procedures so calls resolve.
+    for (const auto &s : script->structs) {
+      for (const auto &m : s->methods) {
+        validateMethod(s, m);
+      }
     }
   }
 
@@ -142,7 +212,9 @@ public:
           &globals) {
     _procedures.clear();
     for (const auto &name : _interpreter->getProcedureNames()) {
-      _procedures[name] = _interpreter->getProcedure(name);
+      if (ProcedureDeclPtr p = _interpreter->getProcedure(name)) {
+        _procedures[name].push_back(p);
+      }
     }
 
     _scopes.clear();
@@ -168,8 +240,10 @@ private:
   const std::string &_filename;
   Interpreter *_interpreter;
   std::vector<CompilationError> &_errors;
-  std::unordered_map<std::string, ProcedureDeclPtr> _procedures;
+  std::unordered_map<std::string, std::vector<ProcedureDeclPtr>> _procedures;
   std::unordered_map<std::string, StructDeclPtr> _structs;
+  std::unordered_map<std::string, EnumDeclPtr> _enums;
+  const StructDecl *_currentStruct = nullptr; // set while validating a method
   struct VarInfo {
     TypeInfo type;
     bool isConst = false;
@@ -267,6 +341,14 @@ private:
     return nullptr;
   }
 
+  EnumDeclPtr resolveEnum(const std::string &name) const {
+    auto it = _enums.find(name);
+    if (it != _enums.end()) {
+      return it->second;
+    }
+    return _interpreter->getEnum(name);
+  }
+
   void validateStruct(const StructDeclPtr &decl) {
     std::unordered_map<std::string, const Parameter *> seen;
     for (const auto &f : decl->fields) {
@@ -287,16 +369,69 @@ private:
              decl->column);
       }
     }
+    // Method checks: field/method conflicts and duplicate signatures.
+    for (const auto &m : decl->methods) {
+      if (seen.count(m->name)) {
+        emit("Struct '" + decl->name + "' has a field and method both named '" +
+                 m->name + "'",
+             m->line, m->column);
+      }
+    }
+    for (size_t i = 0; i < decl->methods.size(); ++i) {
+      for (size_t j = i + 1; j < decl->methods.size(); ++j) {
+        if (decl->methods[i]->name == decl->methods[j]->name &&
+            sameSignature(decl->methods[i], decl->methods[j])) {
+          emit("Duplicate method signature '" + decl->methods[i]->name +
+                   "' in struct '" + decl->name + "'",
+               decl->methods[j]->line, decl->methods[j]->column);
+        }
+      }
+    }
   }
 
-  // Struct field types that are themselves structs (direct edges for the
-  // cycle check). Arrays/maps carrying structs are followed too.
-  static void structRefs(const TypeInfo &t, std::vector<std::string> &out) {
-    if (t.isStruct) {
-      out.push_back(t.structName);
+  // Validate a method body. `this` is visible as a const struct value.
+  void validateMethod(const StructDeclPtr &s, const ProcedureDeclPtr &m) {
+    _scopes.clear();
+    _currentProcedure = s->name + "." + m->name;
+    _currentReturnType = m->returnType;
+    _loopDepth = 0;
+    _switchDepth = 0;
+    const StructDecl *savedStruct = _currentStruct;
+    _currentStruct = s.get();
+
+    enterScope();
+    defineVar("this", TypeInfo::structOf(s->name), /*isConst*/ true,
+              /*noWarnUnused*/ true);
+    // Bare field names are accessible inside methods (implicit this.field).
+    for (const auto &f : s->fields) {
+      defineVar(f.name, f.type, false, /*noWarnUnused*/ true);
     }
-    if (t.isMap && t.mapValueType) {
-      structRefs(*t.mapValueType, out);
+    for (const auto &param : m->parameters) {
+      defineVar(param.name, param.type, false, /*noWarnUnused*/ true);
+    }
+    validateStmt(m->body);
+    if (_currentReturnType.baseType != DataType::VOID ||
+        _currentReturnType.isArray || _currentReturnType.isMap ||
+        _currentReturnType.isStruct || _currentReturnType.isFunction) {
+      if (!alwaysReturns(m->body)) {
+        warn("Method '" + _currentProcedure +
+                 "' may reach the end without returning a value",
+             m->line, m->column);
+      }
+    }
+    exitScope();
+    _currentStruct = savedStruct;
+    _currentProcedure.clear();
+    _currentReturnType = TypeInfo(DataType::VOID);
+  }
+
+  // Struct field types embedded *by value* (direct edges for the cycle
+  // check). Arrays, maps, and function values hold their contents behind
+  // shared pointers, so `Node[] kids` etc. can't create infinite-size
+  // structs and are not followed.
+  static void structRefs(const TypeInfo &t, std::vector<std::string> &out) {
+    if (t.isStruct && !t.isArray && !t.isMap) {
+      out.push_back(t.structName);
     }
   }
 
@@ -345,15 +480,25 @@ private:
     _currentReturnType = proc->returnType;
     _loopDepth = 0;
     _switchDepth = 0;
+    const StructDecl *savedStruct = _currentStruct;
+    _currentStruct = nullptr;
 
     enterScope();
     for (const auto &param : proc->parameters) {
+      // Default values evaluate in the caller's environment; validate the
+      // expression and its convertibility to the parameter type.
+      if (param.defaultValue) {
+        InferredType dt = inferExpr(param.defaultValue);
+        expectConvertible(dt, param.type, proc->line, proc->column,
+                          "default value of parameter '" + param.name + "'",
+                          param.defaultValue);
+      }
       defineVar(param.name, param.type, false, /*noWarnUnused*/ true);
     }
     validateStmt(proc->body);
     if (_currentReturnType.baseType != DataType::VOID ||
         _currentReturnType.isArray || _currentReturnType.isMap ||
-        _currentReturnType.isStruct) {
+        _currentReturnType.isStruct || _currentReturnType.isFunction) {
       if (!alwaysReturns(proc->body)) {
         warn("Procedure '" + proc->name +
                  "' may reach the end without returning a value",
@@ -361,6 +506,7 @@ private:
       }
     }
     exitScope();
+    _currentStruct = savedStruct;
   }
 
   void expectConvertible(const InferredType &from, const TypeInfo &to,
@@ -392,6 +538,30 @@ private:
       return;
     }
     if (auto *varDecl = dynamic_cast<VarDeclStmt *>(stmt.get())) {
+      if (varDecl->type.isAuto) {
+        // `auto` — infer from the initializer and bake the resolved type
+        // into the AST so the interpreter needn't re-infer.
+        if (!varDecl->initializer) {
+          emit("'auto' variable requires an initializer", varDecl->line,
+               varDecl->column);
+          return;
+        }
+        InferredType initType = inferExpr(varDecl->initializer);
+        if (initType.known) {
+          if (initType.type.baseType == DataType::VOID &&
+              !initType.type.isArray && !initType.type.isMap &&
+              !initType.type.isStruct && !initType.type.isFunction) {
+            emit("Cannot infer 'auto' from a void expression",
+                 varDecl->line, varDecl->column);
+            return;
+          }
+          varDecl->type = initType.type;
+        }
+        // Unknown: keep isAuto — the interpreter binds dynamically.
+        defineVar(varDecl->name, varDecl->type, varDecl->isConst, false,
+                  varDecl->line, varDecl->column);
+        return;
+      }
       if (varDecl->initializer) {
         InferredType initType = inferExpr(varDecl->initializer);
         expectConvertible(initType, varDecl->type, varDecl->line, varDecl->column,
@@ -449,7 +619,8 @@ private:
     if (auto *memAssign = dynamic_cast<MemberAssignStmt *>(stmt.get())) {
       if (auto *root = rootVariable(memAssign->object)) {
         auto info = resolveVar(root->name);
-        if (info.has_value() && info->isConst) {
+        // `this` is const for rebinding but its fields stay writable.
+        if (info.has_value() && info->isConst && root->name != "this") {
           emit("Cannot modify fields of const struct '" + root->name + "'",
                memAssign->line, memAssign->column);
           return;
@@ -533,21 +704,29 @@ private:
     if (auto *forEach = dynamic_cast<ForEachStmt *>(stmt.get())) {
       InferredType iterType = inferExpr(forEach->iterable);
       if (iterType.known) {
+        TypeInfo elemT;
+        bool ok = true;
         if (iterType.type.isArray) {
-          expectConvertible(InferredType{true, iterType.type.elementType()},
-                            forEach->elemType, forEach->line, forEach->column,
-                            "for-each variable");
+          elemT = iterType.type.elementType();
         } else if (iterType.type.isMap) {
-          expectConvertible(InferredType{true, TypeInfo(iterType.type.keyType)},
-                            forEach->elemType, forEach->line, forEach->column,
-                            "for-each variable");
-        } else if (iterType.type.baseType == DataType::STRING) {
-          expectConvertible(InferredType{true, TypeInfo(DataType::CHAR)},
-                            forEach->elemType, forEach->line, forEach->column,
-                            "for-each variable");
+          elemT = TypeInfo(iterType.type.keyType);
+        } else if (iterType.type.baseType == DataType::STRING &&
+                   !iterType.type.isArray && !iterType.type.isMap &&
+                   !iterType.type.isStruct) {
+          elemT = TypeInfo(DataType::CHAR);
         } else {
           emit("for-each requires an array, map, or string", forEach->line,
                forEach->column);
+          ok = false;
+        }
+        if (ok) {
+          if (forEach->elemType.isAuto) {
+            forEach->elemType = elemT; // bake inferred element type
+          } else {
+            expectConvertible(InferredType{true, elemT}, forEach->elemType,
+                              forEach->line, forEach->column,
+                              "for-each variable");
+          }
         }
       }
       enterScope();
@@ -600,7 +779,7 @@ private:
       }
       if (_currentReturnType.baseType == DataType::VOID &&
           !_currentReturnType.isArray && !_currentReturnType.isMap &&
-          !_currentReturnType.isStruct) {
+          !_currentReturnType.isStruct && !_currentReturnType.isFunction) {
         if (ret->value) {
           emit("Void procedure cannot return a value", ret->line, ret->column);
         }
@@ -627,17 +806,53 @@ private:
       }
       return;
     }
+    if (auto *thr = dynamic_cast<ThrowStmt *>(stmt.get())) {
+      InferredType t = inferExpr(thr->value);
+      if (t.known && t.type.baseType == DataType::VOID && !t.type.isArray &&
+          !t.type.isMap && !t.type.isStruct && !t.type.isFunction &&
+          !t.type.isAuto) {
+        emit("Cannot throw a void expression", thr->line, thr->column);
+      }
+      return;
+    }
+    if (auto *tc = dynamic_cast<TryCatchStmt *>(stmt.get())) {
+      validateStmt(tc->tryBlock);
+      if (tc->catchBlock) {
+        enterScope();
+        if (!tc->catchVar.empty()) {
+          defineVar(tc->catchVar, tc->catchType, false, false, tc->line,
+                    tc->column);
+        }
+        validateStmt(tc->catchBlock);
+        exitScope();
+      }
+      if (tc->finallyBlock) {
+        validateStmt(tc->finallyBlock);
+      }
+      return;
+    }
   }
 
   bool canCompare(const TypeInfo &a, const TypeInfo &b) const {
     if (a == b) {
       return true;
     }
+    if (a.isFunction || b.isFunction) {
+      // Identity equality is defined; ordering is not.
+      return a.isFunction && b.isFunction;
+    }
     if (a.isStruct || b.isStruct) {
       // ==/!= on the same struct type compares field-wise.
       return a.isStruct && b.isStruct && a.structName == b.structName;
     }
-    if (a.isArray || b.isArray || a.isMap || b.isMap) {
+    if (a.isArray && b.isArray) {
+      // Arrays compare element-wise (equality) / lexicographically.
+      return canCompare(a.elementType(), b.elementType());
+    }
+    if (a.isMap || b.isMap) {
+      return a.isMap && b.isMap; // equality only
+    }
+    if (a.isArray || b.isArray) {
       return false;
     }
     if (isNumeric(a.baseType) && isNumeric(b.baseType)) {
@@ -842,6 +1057,15 @@ private:
       }
       return hasDefault;
     }
+    if (auto *tc = dynamic_cast<TryCatchStmt *>(s.get())) {
+      // Only counts when the try body always returns AND (if present) the
+      // catch body always returns — finally can't affect this.
+      return alwaysReturns(tc->tryBlock) &&
+             (!tc->catchBlock || alwaysReturns(tc->catchBlock));
+    }
+    if (dynamic_cast<ThrowStmt *>(s.get())) {
+      return true; // never falls through
+    }
     return false;
   }
 
@@ -877,6 +1101,10 @@ private:
     if (auto *i = dynamic_cast<IfStmt *>(s.get())) {
       return containsBreak(i->thenBranch) || containsBreak(i->elseBranch);
     }
+    if (auto *tc = dynamic_cast<TryCatchStmt *>(s.get())) {
+      return containsBreak(tc->tryBlock) || containsBreak(tc->catchBlock) ||
+             containsBreak(tc->finallyBlock);
+    }
     return false;
   }
 
@@ -894,6 +1122,42 @@ private:
         markUsed(var->name);
         return {true, type->type};
       }
+      // Inside a method, a bare sibling method name is a bound reference.
+      if (_currentStruct) {
+        for (const auto &m : _currentStruct->methods) {
+          if (m->name == var->name) {
+            std::vector<TypeInfo> params;
+            for (const auto &p : m->parameters) {
+              params.push_back(p.type);
+            }
+            return {true, TypeInfo::functionOf(
+                              params,
+                              std::make_shared<TypeInfo>(m->returnType))};
+          }
+        }
+      }
+      // A bare procedure name is a function reference (value). A single
+      // overload gives an exact signature; an overload set resolves at
+      // runtime, so the signature stays opaque.
+      std::vector<ProcedureDeclPtr> procs;
+      if (auto pit = _procedures.find(var->name); pit != _procedures.end()) {
+        procs = pit->second;
+      } else if (ProcedureDeclPtr p = _interpreter->getProcedure(var->name)) {
+        procs.push_back(p);
+      }
+      if (!procs.empty()) {
+        if (procs.size() == 1) {
+          std::vector<TypeInfo> params;
+          for (const auto &p : procs[0]->parameters) {
+            params.push_back(p.type);
+          }
+          return {true,
+                  TypeInfo::functionOf(
+                      std::move(params),
+                      std::make_shared<TypeInfo>(procs[0]->returnType))};
+        }
+        return {true, TypeInfo::opaqueFunction()};
+      }
       return {};
     }
     if (auto *arr = dynamic_cast<ArrayLiteralExpr *>(expr.get())) {
@@ -901,7 +1165,7 @@ private:
         return {true, TypeInfo(DataType::VOID, true)};
       }
       InferredType first = inferExpr(arr->elements.front());
-      if (!first.known || first.type.isArray) {
+      if (!first.known) {
         return {};
       }
       for (size_t i = 1; i < arr->elements.size(); ++i) {
@@ -951,11 +1215,40 @@ private:
     }
     if (auto *idx = dynamic_cast<IndexExpr *>(expr.get())) {
       InferredType arrayType = inferExpr(idx->arrayExpr);
+      if (idx->isSlice) {
+        // Slices apply to arrays and strings; bounds are optional ints.
+        if (idx->indexExpr) {
+          InferredType lo = inferExpr(idx->indexExpr);
+          expectConvertible(lo, TypeInfo(DataType::INT64),
+                            idx->indexExpr->line, idx->indexExpr->column,
+                            "slice bound");
+        }
+        if (idx->endIndex) {
+          InferredType hi = inferExpr(idx->endIndex);
+          expectConvertible(hi, TypeInfo(DataType::INT64),
+                            idx->endIndex->line, idx->endIndex->column,
+                            "slice bound");
+        }
+        if (!arrayType.known) {
+          return {};
+        }
+        if (arrayType.type.isArray) {
+          return {true, arrayType.type};
+        }
+        if (arrayType.type.baseType == DataType::STRING) {
+          return {true, TypeInfo(DataType::STRING)};
+        }
+        emit("Slice 'a[b:c]' requires an array or string", idx->line,
+             idx->column);
+        return {};
+      }
       InferredType indexType = inferExpr(idx->indexExpr);
       if (arrayType.known && arrayType.type.isMap) {
-        expectConvertible(indexType, TypeInfo(arrayType.type.keyType),
-                          idx->indexExpr->line, idx->indexExpr->column,
-                          "map key");
+        if (idx->indexExpr) {
+          expectConvertible(indexType, TypeInfo(arrayType.type.keyType),
+                            idx->indexExpr->line, idx->indexExpr->column,
+                            "map key");
+        }
         TypeInfo vT = arrayType.type.mapValueType
                           ? *arrayType.type.mapValueType
                           : TypeInfo(arrayType.type.baseType);
@@ -986,9 +1279,76 @@ private:
             return {true, f.type};
           }
         }
+        for (const auto &m : decl->methods) {
+          if (m->name == mem->member) {
+            // Bound method reference: a function value.
+            std::vector<TypeInfo> params;
+            for (const auto &p : m->parameters) {
+              params.push_back(p.type);
+            }
+            return {true, TypeInfo::functionOf(
+                              params, std::make_shared<TypeInfo>(m->returnType))};
+          }
+        }
         emit("Struct '" + objType.type.structName + "' has no field '" +
                  mem->member + "'",
              mem->line, mem->column);
+      }
+      return {};
+    }
+    if (auto *lam = dynamic_cast<LambdaExpr *>(expr.get())) {
+      // The body sees the enclosing scopes (capture-by-copy at runtime).
+      TypeInfo savedRet = _currentReturnType;
+      std::string savedProc = _currentProcedure;
+      int savedLoop = _loopDepth, savedSwitch = _switchDepth;
+      bool savedAnyReturn = _allowAnyReturn;
+      _currentReturnType = lam->declaredRetType;
+      _currentProcedure = "<lambda>";
+      _loopDepth = 0;
+      _switchDepth = 0;
+      // No declared return type => any return value is allowed; the runtime
+      // infers it.
+      _allowAnyReturn = !lam->hasRetType;
+      enterScope();
+      for (const auto &p : lam->parameters) {
+        defineVar(p.name, p.type, false, /*noWarnUnused*/ true);
+      }
+      validateStmt(lam->body);
+      if (lam->hasRetType &&
+          (lam->declaredRetType.baseType != DataType::VOID ||
+           lam->declaredRetType.isArray || lam->declaredRetType.isMap ||
+           lam->declaredRetType.isStruct ||
+           lam->declaredRetType.isFunction) &&
+          !alwaysReturns(lam->body)) {
+        warn("Lambda may reach the end without returning a value", lam->line,
+             lam->column);
+      }
+      exitScope();
+      _currentReturnType = savedRet;
+      _currentProcedure = savedProc;
+      _loopDepth = savedLoop;
+      _switchDepth = savedSwitch;
+      _allowAnyReturn = savedAnyReturn;
+      std::vector<TypeInfo> params;
+      for (const auto &p : lam->parameters) {
+        params.push_back(p.type);
+      }
+      return {true, TypeInfo::functionOf(
+                        params,
+                        lam->hasRetType
+                            ? std::make_shared<TypeInfo>(lam->declaredRetType)
+                            : nullptr)};
+    }
+    if (auto *em = dynamic_cast<EnumMemberExpr *>(expr.get())) {
+      if (EnumDeclPtr decl = resolveEnum(em->enumName)) {
+        for (const auto &m : decl->members) {
+          if (m.first == em->memberName) {
+            return {true, TypeInfo(DataType::INT64)};
+          }
+        }
+        emit("Enum '" + em->enumName + "' has no member '" + em->memberName +
+                 "'",
+             em->line, em->column);
       }
       return {};
     }
@@ -1065,7 +1425,7 @@ private:
       VariableExpr *targetVar = rootVariable(upd->target);
       if (targetVar) {
         auto info = resolveVar(targetVar->name);
-        if (info.has_value() && info->isConst) {
+        if (info.has_value() && info->isConst && targetVar->name != "this") {
           emit("Cannot modify const variable '" + targetVar->name + "'",
                upd->line, upd->column);
         }
@@ -1089,16 +1449,106 @@ private:
       argTypes.push_back(inferExpr(arg));
     }
 
-    // Procedures shadow builtins, mirroring the interpreter's precedence.
-    auto localProcIt = _procedures.find(call->functionName);
-    ProcedureDeclPtr proc = nullptr;
-    if (localProcIt != _procedures.end()) {
-      proc = localProcIt->second;
-    } else {
-      proc = _interpreter->getProcedure(call->functionName);
+    // Arbitrary callee expression: f(x), arr[0](x), obj.method(x), etc.
+    if (call->calleeExpr) {
+      if (auto *mem =
+              dynamic_cast<MemberExpr *>(call->calleeExpr.get())) {
+        // obj.method(args) — resolve the method on the struct type so its
+        // signature can be checked like a procedure call.
+        InferredType objT = inferExpr(mem->object);
+        if (objT.known && objT.type.isStruct && !objT.type.isArray) {
+          if (StructDeclPtr decl = resolveStruct(objT.type.structName)) {
+            std::vector<ProcedureDeclPtr> candidates;
+            for (const auto &m : decl->methods) {
+              if (m->name == mem->member) {
+                candidates.push_back(m);
+              }
+            }
+            if (!candidates.empty()) {
+              return inferOverloadCall(candidates, call, argTypes);
+            }
+          }
+        }
+        // Not a method call — treat like any function value.
+        InferredType t = inferExpr(call->calleeExpr);
+        if (t.known && !t.type.isFunction) {
+          emit("Expression is not callable", call->line, call->column);
+        }
+        if (t.known && t.type.retType) {
+          return {true, *t.type.retType};
+        }
+        return {};
+      }
+      InferredType calleeT = inferExpr(call->calleeExpr);
+      if (calleeT.known && !calleeT.type.isFunction) {
+        emit("Expression is not callable", call->line, call->column);
+      }
+      if (calleeT.known && calleeT.type.retType) {
+        return {true, *calleeT.type.retType};
+      }
+      return {};
     }
 
-    if (!proc) {
+    // A variable holding a function value shadows procedures/builtins —
+    // mirroring the interpreter's precedence.
+    if (auto varInfo = resolveVar(call->functionName)) {
+      markUsed(call->functionName);
+      const TypeInfo &vt = varInfo->type;
+      if (!vt.isFunction) {
+        emit("'" + call->functionName + "' is not a function value",
+             call->line, call->column);
+        return {};
+      }
+      if (vt.fnOpaque) {
+        // Overloaded procedure reference — resolved at runtime.
+        return {};
+      }
+      if (!vt.paramTypes.empty()) {
+        if (argTypes.size() != vt.paramTypes.size()) {
+          emit("Function value expects " +
+                   std::to_string(vt.paramTypes.size()) + " arguments, got " +
+                   std::to_string(argTypes.size()),
+               call->line, call->column);
+        } else {
+          for (size_t i = 0; i < argTypes.size(); ++i) {
+            expectConvertible(argTypes[i], vt.paramTypes[i], call->line,
+                              call->column, "function call argument",
+                              call->arguments[i]);
+          }
+        }
+      }
+      if (vt.retType) {
+        return {true, *vt.retType};
+      }
+      return {};
+    }
+
+    // Inside a method, `method(args)` calls a sibling method on `this`.
+    if (_currentStruct) {
+      std::vector<ProcedureDeclPtr> methods;
+      for (const auto &m : _currentStruct->methods) {
+        if (m->name == call->functionName) {
+          methods.push_back(m);
+        }
+      }
+      if (!methods.empty()) {
+        return inferOverloadCall(methods, call, argTypes);
+      }
+    }
+
+    // Procedures shadow builtins, mirroring the interpreter's precedence.
+    std::vector<ProcedureDeclPtr> overloads;
+    auto localProcIt = _procedures.find(call->functionName);
+    if (localProcIt != _procedures.end()) {
+      overloads = localProcIt->second;
+    } else if (_interpreter->hasProcedure(call->functionName)) {
+      // Imported/loaded procedure(s): only the first is introspectable.
+      if (ProcedureDeclPtr p = _interpreter->getProcedure(call->functionName)) {
+        overloads.push_back(p);
+      }
+    }
+
+    if (overloads.empty()) {
       // Struct constructor: Point(field0, field1, ...) — positional.
       if (StructDeclPtr decl = resolveStruct(call->functionName)) {
         if (argTypes.size() != decl->fields.size()) {
@@ -1120,20 +1570,74 @@ private:
       return inferBuiltinCall(call, argTypes);
     }
 
-    if (argTypes.size() != proc->parameters.size()) {
-      emit("Procedure '" + call->functionName + "' expects " +
-               std::to_string(proc->parameters.size()) + " arguments, got " +
-               std::to_string(argTypes.size()),
-           call->line, call->column);
-    } else {
+    return inferOverloadCall(overloads, call, argTypes);
+  }
+
+  // Pick the best overload for `call`; checks argument convertibility and
+  // reports a diagnostic when none match. Defaulted parameters count toward
+  // arity satisfaction.
+  InferredType inferOverloadCall(
+      const std::vector<ProcedureDeclPtr> &candidates, CallExpr *call,
+      const std::vector<InferredType> &argTypes) {
+    ProcedureDeclPtr best;
+    int bestScore = -1;
+    bool ambiguous = false;
+    for (const auto &cand : candidates) {
+      size_t required = cand->parameters.size();
+      while (required > 0 && cand->parameters[required - 1].defaultValue) {
+        --required;
+      }
+      if (argTypes.size() < required ||
+          argTypes.size() > cand->parameters.size()) {
+        continue;
+      }
+      // Score: count of exact-type matches (favor exact over convertible).
+      int score = 0;
+      bool viable = true;
       for (size_t i = 0; i < argTypes.size(); ++i) {
-        expectConvertible(argTypes[i], proc->parameters[i].type, call->line,
-                          call->column, "procedure call argument",
-                          call->arguments[i]);
+        if (!argTypes[i].known) {
+          continue; // unknown args can't disqualify
+        }
+        const TypeInfo &pt = cand->parameters[i].type;
+        if (pt.isAuto) {
+          continue;
+        }
+        if (argTypes[i].type == pt) {
+          ++score;
+        } else if (!canConvertCompileTime(argTypes[i].type, pt)) {
+          viable = false;
+          break;
+        }
+      }
+      if (!viable) {
+        continue;
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        best = cand;
+        ambiguous = false;
+      } else if (score == bestScore && best) {
+        ambiguous = true;
       }
     }
-
-    return {true, proc->returnType};
+    if (!best) {
+      emit("No matching overload for '" + call->functionName + "' with " +
+               std::to_string(argTypes.size()) + " argument(s)",
+           call->line, call->column);
+      return {};
+    }
+    if (ambiguous && candidates.size() > 1) {
+      warn("Call to '" + call->functionName +
+               "' is ambiguous between overloads",
+           call->line, call->column);
+    }
+    // Per-argument convertibility diagnostics on the chosen overload.
+    for (size_t i = 0; i < argTypes.size(); ++i) {
+      expectConvertible(argTypes[i], best->parameters[i].type, call->line,
+                        call->column, "procedure call argument",
+                        call->arguments[i]);
+    }
+    return {true, best->returnType};
   }
 
   // Return type inference for builtin calls; {false} means "depends on args".
@@ -1297,7 +1801,7 @@ private:
       return {};
     case BinaryExpr::Operator::MODULO:
       if (!left.type.isArray && !right.type.isArray &&
-          isInteger(left.type.baseType) && isInteger(right.type.baseType)) {
+          isNumeric(left.type.baseType) && isNumeric(right.type.baseType)) {
         return numericResult();
       }
       return {};
@@ -1412,11 +1916,12 @@ bool ScriptManager::checkScriptSource(const std::string &source,
   return compileScript(source, filename, errors, false);
 }
 
-// Collect `struct` type names visible to a file: already-loaded decls plus
-// those declared in (transitively) imported files. Token-scans only — full
-// compilation of imports still happens in compileScript.
-void ScriptManager::collectStructNames(
-    const std::string &filename, std::unordered_set<std::string> &out,
+// Collect `struct`/`enum` type names visible to a file: already-loaded
+// decls plus those declared in (transitively) imported files. Token-scans
+// only — full compilation of imports still happens in compileScript.
+void ScriptManager::collectTypeNames(
+    const std::string &filename, std::unordered_set<std::string> &structs,
+    std::unordered_set<std::string> &enums,
     std::unordered_set<std::string> &visited) {
   std::string id =
       std::filesystem::absolute(filename).lexically_normal().string();
@@ -1441,7 +1946,11 @@ void ScriptManager::collectStructNames(
   for (size_t i = 0; i + 1 < tokens.size(); ++i) {
     if (tokens[i].type == TokenType::STRUCT &&
         tokens[i + 1].type == TokenType::IDENTIFIER) {
-      out.insert(tokens[i + 1].lexeme);
+      structs.insert(tokens[i + 1].lexeme);
+    }
+    if (tokens[i].type == TokenType::ENUM &&
+        tokens[i + 1].type == TokenType::IDENTIFIER) {
+      enums.insert(tokens[i + 1].lexeme);
     }
     if (tokens[i].type == TokenType::IMPORT &&
         tokens[i + 1].type == TokenType::STRING_LITERAL) {
@@ -1449,7 +1958,7 @@ void ScriptManager::collectStructNames(
           std::filesystem::absolute(baseDir / tokens[i + 1].stringValue)
               .lexically_normal()
               .string();
-      collectStructNames(resolved, out, visited);
+      collectTypeNames(resolved, structs, enums, visited);
     }
   }
 }
@@ -1458,6 +1967,7 @@ std::unordered_set<std::string>
 ScriptManager::knownStructNames(const std::string &filename,
                                 const std::vector<Token> &tokens) {
   std::unordered_set<std::string> names;
+  std::unordered_set<std::string> enumSink;
   for (const auto &n : _interpreter->getStructNames()) {
     names.insert(n);
   }
@@ -1471,10 +1981,50 @@ ScriptManager::knownStructNames(const std::string &filename,
           std::filesystem::absolute(baseDir / tokens[i + 1].stringValue)
               .lexically_normal()
               .string();
-      collectStructNames(resolved, names, visited);
+      collectTypeNames(resolved, names, enumSink, visited);
     }
   }
   return names;
+}
+
+std::unordered_set<std::string>
+ScriptManager::knownEnumNames(const std::string &filename,
+                              const std::vector<Token> &tokens) {
+  std::unordered_set<std::string> names;
+  std::unordered_set<std::string> structSink;
+  for (const auto &n : _interpreter->getEnumNames()) {
+    names.insert(n);
+  }
+  std::unordered_set<std::string> visited;
+  std::filesystem::path baseDir =
+      std::filesystem::path(filename).parent_path();
+  for (size_t i = 0; i + 1 < tokens.size(); ++i) {
+    if (tokens[i].type == TokenType::IMPORT &&
+        tokens[i + 1].type == TokenType::STRING_LITERAL) {
+      std::string resolved =
+          std::filesystem::absolute(baseDir / tokens[i + 1].stringValue)
+              .lexically_normal()
+              .string();
+      collectTypeNames(resolved, structSink, names, visited);
+    }
+  }
+  return names;
+}
+
+bool ScriptManager::importPathAllowed(const std::string &resolvedPath) const {
+  if (_importRoots.empty()) {
+    return true;
+  }
+  std::filesystem::path target =
+      std::filesystem::weakly_canonical(resolvedPath);
+  for (const auto &root : _importRoots) {
+    std::filesystem::path r = std::filesystem::weakly_canonical(root);
+    auto it = std::mismatch(r.begin(), r.end(), target.begin(), target.end());
+    if (it.first == r.end()) {
+      return true; // resolved path sits inside this root
+    }
+  }
+  return false;
 }
 
 bool ScriptManager::compileScript(const std::string &source,
@@ -1484,72 +2034,103 @@ bool ScriptManager::compileScript(const std::string &source,
                                   std::vector<std::string> *loadedProcNames) {
   errors.clear();
 
+  std::string cacheKey =
+      std::filesystem::absolute(filename).lexically_normal().string();
+  size_t sourceHash = std::hash<std::string>{}(source);
+  ScriptPtr script;
+  bool fromCache = false;
+
   try {
-    // Tokenize
-    Lexer lexer(source, filename);
-    std::vector<Token> tokens;
-
-    try {
-      tokens = lexer.tokenize();
-    } catch (const std::exception &e) {
-      errors.push_back(CompilationError(e.what(), filename, "", 0, 0));
-      return false;
-    }
-
-    // Check for unknown tokens
-    for (const auto &token : tokens) {
-      if (token.type == TokenType::UNKNOWN) {
-        std::stringstream ss;
-        ss << "Unexpected character: '" << token.lexeme << "'";
-        errors.push_back(
-            CompilationError(ss.str(), filename, "", token.line, token.column));
+    // AST cache hit: skip lexing/parsing entirely (validation still runs).
+    if (_astCacheEnabled) {
+      auto it = _astCache.find(cacheKey);
+      if (it != _astCache.end() && it->second.sourceHash == sourceHash) {
+        script = it->second.script;
+        fromCache = true;
       }
     }
 
-    if (hasErrors(errors)) {
-      return false;
-    }
+    if (!fromCache) {
+      // Tokenize
+      Lexer lexer(source, filename);
+      std::vector<Token> tokens;
 
-    // Parse
-    Parser parser(tokens, filename, knownStructNames(filename, tokens));
-    ScriptPtr script;
-
-    try {
-      script = parser.parse();
-    } catch (const ParseError &e) {
-      errors.push_back(CompilationError(e.what(), filename, e.procedureName,
-                                        e.line, e.column));
-      return false;
-    } catch (const std::exception &e) {
-      errors.push_back(CompilationError(e.what(), filename, "", 0, 0));
-      return false;
-    }
-
-    if (parser.hasErrors()) {
-      for (const auto &pe : parser.getErrors()) {
-        errors.push_back(CompilationError(pe.what(), filename, pe.procedureName,
-                                          pe.line, pe.column));
+      try {
+        tokens = lexer.tokenize();
+      } catch (const std::exception &e) {
+        errors.push_back(CompilationError(e.what(), filename, "", 0, 0));
+        return false;
       }
-      return false;
-    }
 
-    // Check for procedures with duplicate names
-    std::unordered_map<std::string, int> procNames;
-    for (const auto &proc : script->procedures) {
-      if (procNames.find(proc->name) != procNames.end()) {
-        errors.push_back(
-            CompilationError("Duplicate procedure name: " + proc->name,
-                             filename, proc->name, proc->line, proc->column));
+      // Check for unknown tokens
+      for (const auto &token : tokens) {
+        if (token.type == TokenType::UNKNOWN) {
+          std::stringstream ss;
+          ss << "Unexpected character: '" << token.lexeme << "'";
+          errors.push_back(CompilationError(ss.str(), filename, "", token.line,
+                                          token.column));
+        }
       }
-      procNames[proc->name]++;
-    }
 
-    if (hasErrors(errors)) {
-      return false;
+      if (hasErrors(errors)) {
+        return false;
+      }
+
+      // Parse
+      Parser parser(tokens, filename, knownStructNames(filename, tokens),
+                    knownEnumNames(filename, tokens));
+
+      try {
+        script = parser.parse();
+      } catch (const ParseError &e) {
+        errors.push_back(CompilationError(e.what(), filename, e.procedureName,
+                                          e.line, e.column));
+        return false;
+      } catch (const std::exception &e) {
+        errors.push_back(CompilationError(e.what(), filename, "", 0, 0));
+        return false;
+      }
+
+      if (parser.hasErrors()) {
+        for (const auto &pe : parser.getErrors()) {
+          errors.push_back(CompilationError(pe.what(), filename,
+                                            pe.procedureName, pe.line,
+                                            pe.column));
+        }
+        return false;
+      }
+
+      // Duplicate signatures are errors; same-name overloads are fine.
+      std::unordered_map<std::string, std::vector<ProcedureDeclPtr>> byName;
+      for (const auto &proc : script->procedures) {
+        for (const auto &other : byName[proc->name]) {
+          if (sameSignature(proc, other)) {
+            errors.push_back(CompilationError(
+                "Duplicate procedure signature: " + proc->name, filename,
+                proc->name, proc->line, proc->column));
+          }
+        }
+        byName[proc->name].push_back(proc);
+      }
+
+      if (hasErrors(errors)) {
+        return false;
+      }
+
+      if (_astCacheEnabled) {
+        _astCache[cacheKey] = AstCacheEntry{sourceHash, script};
+      }
     }
 
     // Load imports before validating this file so its procedure calls resolve.
     if (load) {
+      if (!script->imports.empty()) {
+        if (!_importsEnabled) {
+          errors.emplace_back("Imports are disabled", filename, "",
+                              script->imports.front().second, 0);
+          return false;
+        }
+      }
       std::string selfId =
           std::filesystem::absolute(filename).lexically_normal().string();
       _loadingFiles.insert(selfId);
@@ -1560,6 +2141,13 @@ bool ScriptManager::compileScript(const std::string &source,
         std::string resolved = std::filesystem::absolute(baseDir / imp.first)
                                    .lexically_normal()
                                    .string();
+        if (!importPathAllowed(resolved)) {
+          errors.emplace_back("Import '" + imp.first +
+                                  "' resolves outside the allowed roots",
+                              filename, "", imp.second, 0);
+          _loadingFiles.erase(selfId);
+          return false;
+        }
         if (_loadedFiles.count(resolved) || _loadingFiles.count(resolved)) {
           continue; // already loaded, or circular import in progress
         }
@@ -1594,7 +2182,7 @@ bool ScriptManager::compileScript(const std::string &source,
     if (load) {
       _interpreter->loadScript(script);
 
-      // Track which file each procedure came from
+      // Track which file each declaration came from
       for (const auto &proc : script->procedures) {
         _procedureFiles[proc->name] = filename;
         if (loadedProcNames) {
@@ -1603,6 +2191,9 @@ bool ScriptManager::compileScript(const std::string &source,
       }
       for (const auto &s : script->structs) {
         _structFiles[s->name] = filename;
+      }
+      for (const auto &e : script->enums) {
+        _enumFiles[e->name] = filename;
       }
     }
 
@@ -1662,6 +2253,26 @@ bool ScriptManager::reloadScriptFile(const std::string &filename,
     }
   }
 
+  // And enums.
+  std::vector<std::pair<std::string, std::string>> prevEnums;
+  for (const auto &kv : _enumFiles) {
+    if (std::filesystem::absolute(kv.second).lexically_normal().string() ==
+        selfId) {
+      prevEnums.push_back(kv);
+    }
+  }
+  std::vector<std::pair<std::string, EnumDeclPtr>> savedEnums;
+  for (const auto &kv : prevEnums) {
+    EnumDeclPtr old = _interpreter->removeEnum(kv.first);
+    if (old) {
+      savedEnums.emplace_back(kv.first, old);
+    }
+  }
+
+  // The AST cache may hold a copy of this file's previous parse — drop it so
+  // a hash collision can't resurrect stale declarations.
+  _astCache.erase(selfId);
+
   std::vector<std::string> newProcs;
   if (!compileScript(source, filename, errors, true, &newProcs)) {
     // Roll back: restore the old declarations.
@@ -1672,6 +2283,10 @@ bool ScriptManager::reloadScriptFile(const std::string &filename,
     for (auto &kv : savedStructs) {
       _interpreter->addStruct(kv.second, kv.first);
       _structFiles[kv.first] = filename;
+    }
+    for (auto &kv : savedEnums) {
+      _interpreter->addEnum(kv.second, kv.first);
+      _enumFiles[kv.first] = filename;
     }
     return false;
   }
@@ -1686,6 +2301,11 @@ bool ScriptManager::reloadScriptFile(const std::string &filename,
   for (const auto &kv : prevStructs) {
     if (!_interpreter->hasStruct(kv.first)) {
       _structFiles.erase(kv.first);
+    }
+  }
+  for (const auto &kv : prevEnums) {
+    if (!_interpreter->hasEnum(kv.first)) {
+      _enumFiles.erase(kv.first);
     }
   }
   return true;
@@ -1720,6 +2340,18 @@ bool ScriptManager::executeProcedure(const std::string &procedureName,
         else
           ss << " (host)";
       }
+    }
+    errorMessage = ss.str();
+    return false;
+  } catch (const ScriptException &e) {
+    // A `throw` that no catch handled: surface it like a runtime error.
+    std::stringstream ss;
+    ss << "Uncaught exception: " << ValueHelper::toString(e.value);
+    if (!e.file.empty()) {
+      ss << " (thrown in " << e.file << ":" << e.line << ")";
+    }
+    if (!e.procedure.empty()) {
+      ss << " in procedure '" << e.procedure << "'";
     }
     errorMessage = ss.str();
     return false;
@@ -1762,7 +2394,11 @@ bool ScriptManager::evaluateSnippet(const std::string &source,
     for (const auto &n : _interpreter->getStructNames()) {
       knownStructs.insert(n);
     }
-    Parser parser(tokens, name, knownStructs);
+    std::unordered_set<std::string> knownEnums;
+    for (const auto &n : _interpreter->getEnumNames()) {
+      knownEnums.insert(n);
+    }
+    Parser parser(tokens, name, knownStructs, knownEnums);
     std::vector<StmtPtr> statements;
     try {
       statements = parser.parseStatements();
@@ -1809,6 +2445,10 @@ bool ScriptManager::evaluateSnippet(const std::string &source,
         }
       }
       errorMessage = ss.str();
+      return false;
+    } catch (const ScriptException &e) {
+      errorMessage =
+          "Uncaught exception: " + ValueHelper::toString(e.value);
       return false;
     } catch (const std::exception &e) {
       errorMessage = std::string("Runtime error: ") + e.what();
@@ -1906,10 +2546,48 @@ void ScriptManager::clear() {
   _interpreter = std::make_unique<Interpreter>();
   _procedureFiles.clear();
   _structFiles.clear();
+  _enumFiles.clear();
   _loadedFiles.clear();
   _loadingFiles.clear();
   _replGlobalTypes.clear();
+  _astCache.clear();
 }
+
+void ScriptManager::addImportRoot(const std::string &directory) {
+  _importRoots.push_back(
+      std::filesystem::absolute(directory).lexically_normal().string());
+}
+
+void ScriptManager::clearImportRoots() { _importRoots.clear(); }
+
+void ScriptManager::setImportsEnabled(bool enabled) {
+  _importsEnabled = enabled;
+}
+
+void ScriptManager::disableBuiltin(const std::string &name) {
+  _interpreter->disableBuiltin(name);
+}
+
+void ScriptManager::enableBuiltin(const std::string &name) {
+  _interpreter->enableBuiltin(name);
+}
+
+bool ScriptManager::isBuiltinEnabled(const std::string &name) const {
+  return _interpreter->isBuiltinEnabled(name);
+}
+
+void ScriptManager::setAstCacheEnabled(bool enabled) {
+  _astCacheEnabled = enabled;
+  if (!enabled) {
+    _astCache.clear();
+  }
+}
+
+bool ScriptManager::isAstCacheEnabled() const { return _astCacheEnabled; }
+
+size_t ScriptManager::astCacheSize() const { return _astCache.size(); }
+
+void ScriptManager::clearAstCache() { _astCache.clear(); }
 
 void ScriptManager::setExecutionLimits(size_t maxCallDepth, size_t maxSteps) {
   _interpreter->setExecutionLimits(maxCallDepth, maxSteps);

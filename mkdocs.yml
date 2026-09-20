@@ -47,6 +47,9 @@ nav:
       - Data Types & Arrays: language/data-types.md
       - Operators: language/operators.md
       - Control Flow: language/control-flow.md
+      - Functions: language/functions.md
+  - Built-ins: builtins.md
+  - CLI: cli.md
   - Examples:
       - "1. Hello World": examples/01-hello-world.md
       - "2. Control Flow & Loops": examples/02-control-flow.md

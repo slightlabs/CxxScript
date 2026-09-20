@@ -302,9 +302,15 @@ TEST(ArrayTest, EqualityAndComparisonSemantics) {
             return a != b;
         }
 
-        bool compareInvalid() {
+        bool compareLexicographic() {
             int32[] a = [1];
             int32[] b = [2];
+            return a < b;
+        }
+
+        bool comparePrefix() {
+            int32[] a = [1, 2];
+            int32[] b = [1, 2, 3];
             return a < b;
         }
     )";
@@ -325,6 +331,10 @@ TEST(ArrayTest, EqualityAndComparisonSemantics) {
   EXPECT_TRUE(std::get<bool>(result));
 
   errorMsg.clear();
-  ASSERT_FALSE(manager.executeProcedure("compareInvalid", args, result, errorMsg));
-  EXPECT_FALSE(errorMsg.empty());
+  ASSERT_TRUE(manager.executeProcedure("compareLexicographic", args, result, errorMsg)) << errorMsg;
+  EXPECT_TRUE(std::get<bool>(result));
+
+  errorMsg.clear();
+  ASSERT_TRUE(manager.executeProcedure("comparePrefix", args, result, errorMsg)) << errorMsg;
+  EXPECT_TRUE(std::get<bool>(result));
 }

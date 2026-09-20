@@ -24,10 +24,11 @@ public:
 
 class Parser {
 public:
-  // knownStructs: names of struct types declared by previously loaded files
-  // (imports, earlier loadScriptSource calls, REPL state).
+  // knownStructs/knownEnums: names of types declared by previously loaded
+  // files (imports, earlier loadScriptSource calls, REPL state).
   Parser(const std::vector<Token> &tokens, const std::string &filename = "",
-         const std::unordered_set<std::string> &knownStructs = {});
+         const std::unordered_set<std::string> &knownStructs = {},
+         const std::unordered_set<std::string> &knownEnums = {});
 
   ScriptPtr parse();
 
@@ -44,6 +45,7 @@ private:
   std::string _currentProcedure;
   std::vector<ParseError> _errors;
   std::unordered_set<std::string> _structNames; // known + in-file struct types
+  std::unordered_set<std::string> _enumNames;   // known + in-file enum types
 
   // Utility methods
   bool isAtEnd() const;
@@ -61,14 +63,25 @@ private:
   // Parsing methods
   ProcedureDeclPtr procedureDeclaration();
   StructDeclPtr structDeclaration();
+  EnumDeclPtr enumDeclaration();
   std::vector<Parameter> parameters();
+  // Parse a parameter inside a lambda: `type name`, `type name = expr`, or
+  // a bare `name` (auto-typed).
+  Parameter lambdaParameter();
   TypeInfo parseType();
+  TypeInfo parseBaseType();
   Token consumeGreaterThan();
   // Index just past a `map<K, V>` type starting at offset, or -1.
   int mapTypeEnd(size_t offset) const;
+  // Index just past a full type starting at offset (scalar, struct, map,
+  // fn(...) -> T, auto), including any [] suffixes; -1 when invalid.
+  int typeEnd(size_t offset) const;
   // Whether tokens at offset start a variable declaration (scalar, array,
-  // const-qualified, or map<K,V> type followed by a variable name).
+  // const-qualified, map<K,V>, fn, or auto type followed by a name).
   bool isDeclStart(size_t offset) const;
+  // True when tokens at _current start a lambda expression:
+  // fn ( params ) [-> type] {
+  bool lambdaAhead() const;
 
   StmtPtr statement();
   StmtPtr varDeclaration();
@@ -81,6 +94,8 @@ private:
   StmtPtr returnStatement();
   StmtPtr breakStatement();
   StmtPtr continueStatement();
+  StmtPtr tryCatchStatement();
+  StmtPtr throwStatement();
   StmtPtr block();
 
   ExprPtr expression();
@@ -99,6 +114,7 @@ private:
   ExprPtr unary();
   ExprPtr primary();
   ExprPtr interpolatedString(const Token &token);
+  ExprPtr lambdaExpression(const Token &fnToken);
   ExprPtr call();
   ExprPtr finishCall(ExprPtr callee);
   ExprPtr finishIndex(ExprPtr callee);

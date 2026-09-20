@@ -26,17 +26,22 @@ cd build && ctest
 
 ## Features
 
-- **Multiple Data Types**: int8, uint8, int16, uint16, int32, uint32, int64, uint64, float, double, char, string, bool, and typed arrays of any scalar (e.g., `int32[]`, `char[]`).
-- **Arrays Built-ins**: array literals `[1,2,3]`, indexing `arr[0]`, mutation `arr[0] = 5`, `len(arr)`, `push(arr, value)` (returns new length), `pop(arr)` (returns last element, errors on empty).
-- **Arithmetic Operators**: +, -, *, /, % with proper precedence (modulo is integer-only; floating point uses +,-,*,/)
+- **Multiple Data Types**: int8, uint8, int16, uint16, int32, uint32, int64, uint64, float, double, char, string, bool, and `auto` inference for locals.
+- **Containers**: nested typed arrays (`int32[][]`), `map<K, V>` with any value type (including containers and structs), and structs with fields **and methods**.
+- **Enums**: `enum Color { RED, GREEN, BLUE }` — named `int64` constants usable in `switch`.
+- **Arrays**: literals `[1,2,3]`, negative indexing `a[-1]`, slicing `a[1:3]`, mutation `arr[0] = 5`, deep `==`/ordering, `len()`, `push()`, `pop()`, `insert()`, `removeAt()`.
+- **Functions as values**: lambdas with captures (`fn(x) { return x + n; }`), procedure references, bound methods (`auto m = p.mag`), and `fn(params) -> ret` types.
+- **Procedures**: default parameters, overloading, cross-file calls, hot reload via `reloadScriptFile`.
+- **Arithmetic Operators**: +, -, *, /, % with proper precedence (floats use `fmod` semantics)
 - **Bitwise Operators**: &, |, ^, ~, <<, >> (integers only)
 - **Logical Operators**: !, &&, || with short-circuit evaluation
-- **Control Flow**: if/else, while, for, do-while, switch/case/default, ternary `?:`, break/continue
-- **Compound Assignments**: +=, -=, *=, /=
-- **Procedure Calls**: Scripts can call other procedures defined in the same or different script files
+- **Control Flow**: if/else, while, for, range-for (`for (x : coll)`), do-while, switch/case/default, ternary `?:`, break/continue, **try/catch/finally/throw**
+- **Compound Assignments**: +=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=; `++`/`--` prefix/postfix
+- **Safety Guardrails**: optional call-depth/step-count/memory limits (fatal — not catchable), import sandboxing (`addImportRoot`, `setImportsEnabled`), per-builtin disabling, parsed-AST caching
+- **Tooling**: `cxxscript` CLI — `run`, `check`, `eval`, `fmt` (formatter), `debug` (breakpoints/stepping), interactive REPL; VS Code grammar under `editors/vscode-cxxscript`
 - **External Function Callbacks**: Call C++ functions from scripts with generic argument passing, bulk registration, and typed helper wrappers
 - **External Variables**: Expose host variables to scripts via getters/setters (read/write or read-only helper)
-- **Comprehensive Error Reporting**: Compilation and runtime errors with line numbers and procedure names
+- **Comprehensive Error Reporting**: Compilation and runtime errors with line numbers, procedure names, and stack traces
 - **Decoupled Parser**: Parser logic is separated for easy unit testing
 
 ## Project Structure
@@ -44,28 +49,35 @@ cd build && ctest
 ```
 /cxxscript/
 ├── include/              # Public headers (Library API)
-│   ├── AST.h, DataTypes.h, Interpreter.h
+│   ├── AST.h, DataTypes.h, Formatter.h, Interpreter.h
 │   ├── Lexer.h, Parser.h, ScriptManager.h, Token.h
 ├── src/                  # Implementation files
-│   ├── DataTypes.cpp, Interpreter.cpp, Lexer.cpp
+│   ├── DataTypes.cpp, Formatter.cpp, Interpreter.cpp, Lexer.cpp
 │   ├── Parser.cpp, ScriptManager.cpp, Token.cpp
-├── tests/                # Test suite
+├── cli/                  # cxxscript CLI: run/check/eval/fmt/debug/REPL
+├── tests/                # Test suite (GoogleTest)
 │   ├── test_lexer.cpp, test_parser.cpp, test_interpreter.cpp
 │   ├── test_error_handling.cpp, test_comprehensive.cpp
 │   ├── test_external_functions.cpp, test_multi_file.cpp
 │   ├── test_string_concat.cpp, test_real_world_app.cpp
+│   ├── test_language_v2.cpp   # new-language-feature suite
+│   └── ...              # maps, structs, const/import, hot reload, etc.
+├── fuzz/                 # libFuzzer harnesses (lexer, parser, full script)
+├── benchmarks/           # dependency-free perf suite (cxxscript_bench)
+├── editors/vscode-cxxscript/  # VS Code TextMate grammar + language config
 ├── examples/             # Example applications
 │   ├── example_usage.cpp, demo_error_detection.cpp
 ├── scripts/              # Script files and test data
 │   ├── example.script, demo_concat.script
 │   └── test_files/      # Test script modules
 ├── docs/                 # MkDocs site source (published to GitHub Pages)
+├── recipes/cxxscript/    # ConanCenter-style recipe
 ├── .github/workflows/    # CI, auto-tag, release, and docs-deploy pipelines
 ├── conanfile.py           # Conan 2.x package recipe
 ├── test_package/          # Conan recipe smoke test
 ├── build/                # Build outputs (generated)
 │   ├── lib/             # libCxxScript.a
-│   ├── bin/             # Examples
+│   ├── bin/             # Examples and cxxscript CLI
 │   └── tests/           # Test executables
 ├── CMakeLists.txt       # Build configuration
 ├── mkdocs.yml           # Documentation site configuration
@@ -406,10 +418,12 @@ cmake --build . --target run_example
 | Option | Default | Description |
 |---|---|---|
 | `CXXSCRIPT_BUILD_TESTS` | `ON` | Build the GoogleTest suite (fetched via `FetchContent`) |
-| `CXXSCRIPT_BUILD_EXAMPLES` | `ON` | Build the example/demo executables |
+| `CXXSCRIPT_BUILD_EXAMPLES` | `ON` | Build the example/demo executables and the `cxxscript` CLI |
+| `CXXSCRIPT_BUILD_FUZZERS` | `OFF` | Build libFuzzer harnesses (requires Clang) |
+| `CXXSCRIPT_BUILD_BENCHMARKS` | `OFF` | Build the `cxxscript_bench` performance suite |
 
-Turn both off when consuming CxxScript as a dependency (e.g. `add_subdirectory`, Conan) to skip
-GoogleTest and the demo binaries:
+Turn the extras off when consuming CxxScript as a dependency (e.g. `add_subdirectory`, Conan)
+to skip GoogleTest and the demo binaries:
 
 ```bash
 cmake -S . -B build -DCXXSCRIPT_BUILD_TESTS=OFF -DCXXSCRIPT_BUILD_EXAMPLES=OFF
@@ -473,7 +487,7 @@ Consume it from another project:
 ```ini
 # conanfile.txt
 [requires]
-cxxscript/1.0.0
+cxxscript/0.1.5
 
 [generators]
 CMakeDeps
@@ -546,10 +560,11 @@ Errors during execution include:
 
 ### Assignment
 - Assign: `=`
-- Plus assign: `+=`
-- Minus assign: `-=`
-- Multiply assign: `*=`
-- Divide assign: `/=`
+- Compound: `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+- Increment/decrement: `++`, `--` (prefix and postfix)
+
+### Exceptions
+- `try` / `catch` / `finally` / `throw` — see [Control Flow](https://slightlabs.github.io/CxxScript/language/control-flow/#try--catch--finally--throw)
 
 ## Comments
 

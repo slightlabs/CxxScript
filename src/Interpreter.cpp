@@ -245,12 +245,15 @@ bool Interpreter::hasExternalVariable(const std::string &name) const {
 
 void Interpreter::loadScript(ScriptPtr script) {
   for (auto &proc : script->procedures) {
-    _procedures[proc->name] = proc;
-    _procedureFiles[proc.get()] = script->filename;
+    addProcedure(proc, script->filename);
   }
   for (auto &s : script->structs) {
     _structs[s->name] = s;
     _structFiles[s.get()] = script->filename;
+  }
+  for (auto &e : script->enums) {
+    _enums[e->name] = e;
+    _enumFiles[e.get()] = script->filename;
   }
   ++_callCacheVersion;
 }
@@ -293,16 +296,83 @@ std::vector<std::string> Interpreter::getStructNames() const {
   return names;
 }
 
+void Interpreter::addEnum(const EnumDeclPtr &decl, const std::string &file) {
+  if (!decl) {
+    return;
+  }
+  _enums[decl->name] = decl;
+  _enumFiles[decl.get()] = file;
+}
+
+EnumDeclPtr Interpreter::removeEnum(const std::string &name) {
+  auto it = _enums.find(name);
+  if (it == _enums.end()) {
+    return nullptr;
+  }
+  EnumDeclPtr old = it->second;
+  _enumFiles.erase(old.get());
+  _enums.erase(it);
+  return old;
+}
+
+bool Interpreter::hasEnum(const std::string &name) const {
+  return _enums.find(name) != _enums.end();
+}
+
+EnumDeclPtr Interpreter::getEnum(const std::string &name) const {
+  auto it = _enums.find(name);
+  return it != _enums.end() ? it->second : nullptr;
+}
+
+std::vector<std::string> Interpreter::getEnumNames() const {
+  std::vector<std::string> names;
+  names.reserve(_enums.size());
+  for (const auto &kv : _enums) {
+    names.push_back(kv.first);
+  }
+  return names;
+}
+
+void Interpreter::disableBuiltin(const std::string &name) {
+  _disabledBuiltins.insert(name);
+  ++_callCacheVersion;
+}
+
+void Interpreter::enableBuiltin(const std::string &name) {
+  _disabledBuiltins.erase(name);
+  ++_callCacheVersion;
+}
+
+bool Interpreter::isBuiltinEnabled(const std::string &name) const {
+  return _disabledBuiltins.find(name) == _disabledBuiltins.end();
+}
+
 ProcedureDeclPtr Interpreter::removeProcedure(const std::string &name) {
   auto it = _procedures.find(name);
   if (it == _procedures.end()) {
     return nullptr;
   }
-  ProcedureDeclPtr old = it->second;
-  _procedureFiles.erase(old.get());
+  ProcedureDeclPtr old = it->second.front();
+  for (auto &p : it->second) {
+    _procedureFiles.erase(p.get());
+  }
   _procedures.erase(it);
   ++_callCacheVersion;
   return old;
+}
+
+// Whether two parameter type lists are identical (overloads must differ).
+static bool sameSignature(const std::vector<Parameter> &a,
+                          const std::vector<Parameter> &b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i].type != b[i].type) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void Interpreter::addProcedure(const ProcedureDeclPtr &proc,
@@ -310,7 +380,17 @@ void Interpreter::addProcedure(const ProcedureDeclPtr &proc,
   if (!proc) {
     return;
   }
-  _procedures[proc->name] = proc;
+  auto &set = _procedures[proc->name];
+  for (auto &existing : set) {
+    if (sameSignature(existing->parameters, proc->parameters)) {
+      _procedureFiles.erase(existing.get());
+      existing = proc;
+      _procedureFiles[proc.get()] = file;
+      ++_callCacheVersion;
+      return;
+    }
+  }
+  set.push_back(proc);
   _procedureFiles[proc.get()] = file;
   ++_callCacheVersion;
 }
@@ -333,26 +413,29 @@ void Interpreter::clearMemoryLimits() { setMemoryLimits(0, 0, 0); }
 
 void Interpreter::noteArrayAllocation(size_t elements) {
   if (_maxAllocations > 0 && ++_allocationCount > _maxAllocations) {
-    throw std::runtime_error(
+    throw RuntimeError(
         "Maximum array allocation count exceeded (limit " +
-        std::to_string(_maxAllocations) + ")");
+            std::to_string(_maxAllocations) + ")",
+        _currentFile, 0, 0, _currentProcedure, /*fatal=*/true);
   }
   checkArraySize(elements);
 }
 
 void Interpreter::checkArraySize(size_t elements) {
   if (_maxArraySize > 0 && elements > _maxArraySize) {
-    throw std::runtime_error("Array size limit exceeded (" +
-                             std::to_string(elements) + " > " +
-                             std::to_string(_maxArraySize) + ")");
+    throw RuntimeError("Array size limit exceeded (" +
+                           std::to_string(elements) + " > " +
+                           std::to_string(_maxArraySize) + ")",
+                       _currentFile, 0, 0, _currentProcedure, /*fatal=*/true);
   }
 }
 
 void Interpreter::checkStringLength(size_t length) {
   if (_maxStringLength > 0 && length > _maxStringLength) {
-    throw std::runtime_error("String length limit exceeded (" +
-                             std::to_string(length) + " > " +
-                             std::to_string(_maxStringLength) + ")");
+    throw RuntimeError("String length limit exceeded (" +
+                           std::to_string(length) + " > " +
+                           std::to_string(_maxStringLength) + ")",
+                       _currentFile, 0, 0, _currentProcedure, /*fatal=*/true);
   }
 }
 
@@ -383,7 +466,7 @@ void Interpreter::setOutputCallback(OutputCallback cb) {
 Value Interpreter::executeProcedure(const std::string &name,
                                     const std::vector<Value> &arguments) {
   auto it = _procedures.find(name);
-  if (it == _procedures.end()) {
+  if (it == _procedures.end() || it->second.empty()) {
     throw std::runtime_error("Procedure not found: " + name);
   }
 
@@ -398,11 +481,31 @@ Value Interpreter::executeProcedure(const std::string &name,
   }
 
   try {
-    Value out = executeProcedure(it->second, arguments);
+    ProcedureDeclPtr proc =
+        it->second.size() == 1
+            ? it->second.front()
+            : resolveOverload(name, it->second, arguments, 0, 0);
+    Value out = executeProcedure(proc, arguments);
     if (topLevel) {
       _executionActive = false;
     }
     return out;
+  } catch (const ScriptException &se) {
+    if (topLevel) {
+      _executionActive = false;
+      std::string msg = "Uncaught script exception: ";
+      try {
+        msg += ValueHelper::toString(se.value);
+      } catch (...) {
+        msg += "<unprintable>";
+      }
+      if (!se.procedure.empty()) {
+        msg += " (thrown in " + se.procedure + " at line " +
+               std::to_string(se.line) + ")";
+      }
+      throw RuntimeError(msg, se.file, se.line, se.column, se.procedure);
+    }
+    throw;
   } catch (...) {
     if (topLevel) {
       _executionActive = false;
@@ -438,6 +541,19 @@ Value Interpreter::executeStatements(const std::vector<StmtPtr> &statements) {
     if (topLevel)
       _executionActive = false;
     return ret.value;
+  } catch (const ScriptException &se) {
+    _currentEnv = previousEnv;
+    if (topLevel) {
+      _executionActive = false;
+      std::string msg = "Uncaught script exception: ";
+      try {
+        msg += ValueHelper::toString(se.value);
+      } catch (...) {
+        msg += "<unprintable>";
+      }
+      throw RuntimeError(msg, se.file, se.line, se.column, se.procedure);
+    }
+    throw;
   } catch (...) {
     _currentEnv = previousEnv;
     if (topLevel)
@@ -448,90 +564,315 @@ Value Interpreter::executeStatements(const std::vector<StmtPtr> &statements) {
 
 Value Interpreter::executeProcedure(ProcedureDeclPtr proc,
                                     const std::vector<Value> &arguments) {
+  std::string file;
+  auto fileIt = _procedureFiles.find(proc.get());
+  if (fileIt != _procedureFiles.end()) {
+    file = fileIt->second;
+  }
+  return invokeCallable(proc->name, proc->parameters, proc->body,
+                        proc->returnType, file, nullptr, arguments, proc->line,
+                        proc->column);
+}
+
+// Number of leading parameters that have no default expression.
+static size_t requiredParamCount(const std::vector<Parameter> &params) {
+  size_t n = params.size();
+  while (n > 0 && params[n - 1].defaultValue) {
+    --n;
+  }
+  return n;
+}
+
+bool Interpreter::runtimeConvertible(const TypeInfo &src,
+                                     const TypeInfo &dst) {
+  if (dst.isAuto) {
+    return true;
+  }
+  if (dst.isFunction || src.isFunction) {
+    return dst.isFunction && src.isFunction;
+  }
+  if (dst.isStruct && !dst.isArray) {
+    return src.isStruct && !src.isArray && src.structName == dst.structName;
+  }
+  if (src.isStruct && !src.isArray) {
+    return false;
+  }
+  if (dst.isMap) {
+    if (!src.isMap) {
+      return false;
+    }
+    TypeInfo sk(src.keyType);
+    TypeInfo dk(dst.keyType);
+    TypeInfo sv = src.mapValueType ? *src.mapValueType
+                                 : TypeInfo(src.baseType);
+    TypeInfo dv = dst.mapValueType ? *dst.mapValueType
+                                 : TypeInfo(dst.baseType);
+    if (sk.baseType == DataType::VOID && sv.baseType == DataType::VOID) {
+      return true; // empty literal adopts the target's types
+    }
+    return runtimeConvertible(sk, dk) && runtimeConvertible(sv, dv);
+  }
+  if (src.isMap) {
+    return false;
+  }
+  if (dst.isArray) {
+    if (!src.isArray) {
+      return false;
+    }
+    TypeInfo se = src.elementType();
+    if (se.baseType == DataType::VOID && !se.isStruct && !se.isFunction) {
+      return true; // empty literal adopts the target's element type
+    }
+    return runtimeConvertible(se, dst.elementType());
+  }
+  if (src.isArray) {
+    return false;
+  }
+  if (src.baseType == DataType::STRING) {
+    return dst.baseType == DataType::STRING; // strings don't parse to numbers
+  }
+  return true; // scalar -> scalar goes through the numeric/bool/string helpers
+}
+
+ProcedureDeclPtr
+Interpreter::resolveOverload(const std::string &name,
+                             const std::vector<ProcedureDeclPtr> &set,
+                             const std::vector<Value> &args, int line,
+                             int column) {
+  std::vector<ProcedureDeclPtr> viable;
+  for (const auto &p : set) {
+    size_t req = requiredParamCount(p->parameters);
+    if (args.size() >= req && args.size() <= p->parameters.size()) {
+      viable.push_back(p);
+    }
+  }
+  if (viable.empty()) {
+    throw runtimeError("No overload of '" + name + "' accepts " +
+                           std::to_string(args.size()) + " argument(s)",
+                       line, column);
+  }
+  if (viable.size() == 1) {
+    return viable.front();
+  }
+
+  int bestScore = -1;
+  ProcedureDeclPtr best;
+  bool tied = false;
+  for (const auto &p : viable) {
+    int score = 0;
+    bool ok = true;
+    if (p->parameters.size() == args.size()) {
+      score += 1; // prefer the overload not relying on defaults
+    }
+    for (size_t i = 0; i < args.size(); ++i) {
+      const TypeInfo &dst = p->parameters[i].type;
+      if (dst.isAuto) {
+        score += 1;
+        continue;
+      }
+      TypeInfo src = ValueHelper::getType(args[i]);
+      if (src == dst) {
+        score += 4;
+      } else if (src.baseType == dst.baseType && !src.isArray &&
+                 !src.isMap && !src.isStruct && !src.isFunction) {
+        score += 2; // same family (e.g. int literal -> int64)
+      } else if (runtimeConvertible(src, dst)) {
+        score += 1;
+      } else {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) {
+      continue;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = p;
+      tied = false;
+    } else if (score == bestScore) {
+      tied = true;
+    }
+  }
+  if (!best) {
+    throw runtimeError("No viable overload of '" + name + "' for the given "
+                           "argument types",
+                       line, column);
+  }
+  if (tied) {
+    throw runtimeError("Ambiguous call to overloaded procedure '" + name + "'",
+                       line, column);
+  }
+  return best;
+}
+
+Value Interpreter::callFunctionValue(const FuncPtr &fn,
+                                     const std::vector<Value> &args, int line,
+                                     int column) {
+  if (!fn) {
+    throw runtimeError("Cannot call a null function value", line, column);
+  }
+  if (!fn->procs.empty()) {
+    ProcedureDeclPtr proc =
+        fn->procs.size() == 1
+            ? fn->procs.front()
+            : resolveOverload(fn->displayName, fn->procs, args, line, column);
+    std::string file;
+    auto fileIt = _procedureFiles.find(proc.get());
+    if (fileIt != _procedureFiles.end()) {
+      file = fileIt->second;
+    }
+    std::string name =
+        fn->displayName.empty() ? proc->name : fn->displayName;
+    return invokeCallable(name, proc->parameters, proc->body, proc->returnType,
+                          file,
+                          fn->captured.empty() ? nullptr : &fn->captured, args,
+                          line, column);
+  }
+  TypeInfo ret = fn->hasRetType ? fn->declaredRetType : TypeInfo::autoType();
+  std::string name = fn->displayName.empty() ? "<lambda>" : fn->displayName;
+  return invokeCallable(name, fn->parameters, fn->body, ret, _currentFile,
+                        fn->captured.empty() ? nullptr : &fn->captured, args,
+                        line, column);
+}
+
+Value Interpreter::invokeCallable(
+    const std::string &name, const std::vector<Parameter> &params,
+    StmtPtr body, const TypeInfo &retType, const std::string &file,
+    const std::unordered_map<std::string, Value> *captures,
+    std::vector<Value> args, int line, int column) {
   std::string previousProcedure = _currentProcedure;
   std::string previousFile = _currentFile;
   int previousCallLine = _callSiteLine;
   int previousCallCol = _callSiteColumn;
-  _currentProcedure = proc->name;
-  _currentFile = "";
-  auto fileIt = _procedureFiles.find(proc.get());
-  if (fileIt != _procedureFiles.end()) {
-    _currentFile = fileIt->second;
-  }
+  _currentProcedure = name;
+  _currentFile = file;
+  _callStack.push_back(name);
 
   auto restoreFrame = [&]() {
     _currentProcedure = previousProcedure;
     _currentFile = previousFile;
     _callSiteLine = previousCallLine;
     _callSiteColumn = previousCallCol;
+    if (!_callStack.empty()) {
+      _callStack.pop_back();
+    }
   };
 
   if (_maxCallDepth > 0 && _currentCallDepth >= _maxCallDepth) {
     restoreFrame();
-    throw runtimeError("Maximum call depth exceeded", proc->line, proc->column);
+    throw RuntimeError("Maximum call depth exceeded", _currentFile, line,
+                       column, name, /*fatal=*/true);
   }
-  // Check argument count
-  if (arguments.size() != proc->parameters.size()) {
+
+  size_t required = requiredParamCount(params);
+  if (args.size() < required || args.size() > params.size()) {
     std::stringstream ss;
-    ss << "Procedure '" << proc->name << "' expects " << proc->parameters.size()
-       << " arguments, got " << arguments.size();
+    ss << "'" << name << "' expects ";
+    if (required == params.size()) {
+      ss << params.size();
+    } else {
+      ss << required << "-" << params.size();
+    }
+    ss << " arguments, got " << args.size();
     restoreFrame();
-    throw runtimeError(ss.str(), proc->line, proc->column);
+    throw runtimeError(ss.str(), line, column);
   }
+
   ++_currentCallDepth;
 
-  // Create new environment for procedure
-  Environment procEnv(_currentEnv);
+  // Captured variables (lambdas, bound methods) sit between the caller
+  // environment and the call's own bindings.
+  std::unique_ptr<Environment> capEnv;
+  Environment *parentEnv = _currentEnv;
+  if (captures && !captures->empty()) {
+    capEnv = std::make_unique<Environment>(_currentEnv);
+    for (const auto &kv : *captures) {
+      capEnv->define(kv.first, kv.second);
+    }
+    parentEnv = capEnv.get();
+  }
+
+  Environment callEnv(parentEnv);
   Environment *previousEnv = _currentEnv;
-  _currentEnv = &procEnv;
+  _currentEnv = &callEnv;
 
   auto restoreAll = [&]() {
     _currentEnv = previousEnv;
     restoreFrame();
   };
 
+  bool returnsVoid = retType.baseType == DataType::VOID &&
+                     !retType.isArray && !retType.isStruct &&
+                     !retType.isMap && !retType.isFunction &&
+                     !retType.isAuto;
+
   try {
-    // Bind parameters
-    for (size_t i = 0; i < proc->parameters.size(); ++i) {
-      Value convertedArg;
-      try {
-        convertedArg = convertToType(arguments[i], proc->parameters[i].type);
-      } catch (const std::exception &e) {
-        throw runtimeError(e.what(), proc->line, proc->column);
+    // Bind provided parameters
+    for (size_t i = 0; i < args.size(); ++i) {
+      Value arg = args[i];
+      if (!params[i].type.isAuto) {
+        try {
+          arg = convertToType(arg, params[i].type);
+        } catch (const std::exception &e) {
+          throw runtimeError(e.what(), line, column);
+        }
       }
-      _currentEnv->define(proc->parameters[i].name, convertedArg);
+      _currentEnv->define(params[i].name, arg);
+    }
+    // Default arguments evaluate in the callee scope so they may reference
+    // earlier parameters and captured variables.
+    for (size_t i = args.size(); i < params.size(); ++i) {
+      const Parameter &p = params[i];
+      Value arg;
+      try {
+        arg = evaluate(p.defaultValue);
+      } catch (const RuntimeError &) {
+        throw;
+      } catch (const std::exception &e) {
+        throw runtimeError(std::string("Default argument for '") + p.name +
+                               "': " + e.what(),
+                           line, column);
+      }
+      if (!p.type.isAuto) {
+        try {
+          arg = convertToType(arg, p.type);
+        } catch (const std::exception &e) {
+          throw runtimeError(e.what(), line, column);
+        }
+      }
+      _currentEnv->define(p.name, arg);
     }
 
-    execute(proc->body);
+    execute(body);
 
-    // If we reach here, no return statement was executed
-    if (proc->returnType.baseType == DataType::VOID &&
-        !proc->returnType.isArray && !proc->returnType.isStruct) {
-      restoreAll();
-      --_currentCallDepth;
-      return static_cast<int32_t>(0); // Dummy value
-    }
-
-    // Non-void procedure without return
     restoreAll();
     --_currentCallDepth;
-    throw runtimeError("Non-void procedure must return a value", proc->line,
-                       proc->column);
+    if (returnsVoid || retType.isAuto) {
+      return static_cast<int32_t>(0);
+    }
+    throw runtimeError("Non-void procedure must return a value", line, column);
 
   } catch (const ReturnException &ret) {
     restoreAll();
     --_currentCallDepth;
 
-    if (proc->returnType.baseType == DataType::VOID &&
-        !proc->returnType.isArray && !proc->returnType.isStruct) {
-      return static_cast<int32_t>(0); // Dummy value
+    if (returnsVoid) {
+      return static_cast<int32_t>(0);
+    }
+    if (retType.isAuto) {
+      return ret.value;
     }
 
     try {
-      return convertToType(ret.value, proc->returnType);
+      return convertToType(ret.value, retType);
     } catch (const std::exception &e) {
-      throw runtimeError(e.what(), proc->line, proc->column);
+      throw runtimeError(e.what(), line, column);
     }
+  } catch (const ScriptException &) {
+    restoreAll();
+    --_currentCallDepth;
+    throw;
   } catch (const BreakException &) {
     restoreAll();
     --_currentCallDepth;
@@ -566,13 +907,14 @@ Value Interpreter::executeProcedure(ProcedureDeclPtr proc,
 }
 
 bool Interpreter::hasProcedure(const std::string &name) const {
-  return _procedures.find(name) != _procedures.end();
+  auto it = _procedures.find(name);
+  return it != _procedures.end() && !it->second.empty();
 }
 
 ProcedureDeclPtr Interpreter::getProcedure(const std::string &name) const {
   auto it = _procedures.find(name);
-  if (it != _procedures.end()) {
-    return it->second;
+  if (it != _procedures.end() && !it->second.empty()) {
+    return it->second.front();
   }
   return nullptr;
 }
@@ -626,9 +968,17 @@ Value Interpreter::evaluate(ExprPtr expr) {
     if (auto *mem = dynamic_cast<MemberExpr *>(expr.get())) {
       return evaluateMember(mem);
     }
+    if (auto *lam = dynamic_cast<LambdaExpr *>(expr.get())) {
+      return evaluateLambda(lam);
+    }
+    if (auto *em = dynamic_cast<EnumMemberExpr *>(expr.get())) {
+      return evaluateEnumMember(em);
+    }
 
     throw runtimeError("Unknown expression type", expr->line, expr->column);
   } catch (RuntimeError &) {
+    throw;
+  } catch (const ScriptException &) {
     throw;
   } catch (const std::exception &e) {
     throw runtimeError(e.what(), expr->line, expr->column);
@@ -641,7 +991,8 @@ void Interpreter::execute(StmtPtr stmt) {
   if (_debugHook &&
       dynamic_cast<BlockStmt *>(stmt.get()) == nullptr) {
     DebugContext ctx{_currentFile, stmt->line, stmt->column,
-                     _currentProcedure, _currentEnv->snapshot()};
+                     _currentProcedure, _currentEnv->snapshot(),
+                     _currentCallDepth, _callStack};
     _debugHook(ctx);
   }
 
@@ -677,6 +1028,10 @@ void Interpreter::execute(StmtPtr stmt) {
       executeMemberAssign(memAssign);
     } else if (auto *forEach = dynamic_cast<ForEachStmt *>(stmt.get())) {
       executeForEach(forEach);
+    } else if (auto *thr = dynamic_cast<ThrowStmt *>(stmt.get())) {
+      executeThrow(thr);
+    } else if (auto *tc = dynamic_cast<TryCatchStmt *>(stmt.get())) {
+      executeTryCatch(tc);
     } else {
       throw runtimeError("Unknown statement type", stmt->line, stmt->column);
     }
@@ -685,6 +1040,8 @@ void Interpreter::execute(StmtPtr stmt) {
   } catch (const BreakException &) {
     throw;
   } catch (const ContinueException &) {
+    throw;
+  } catch (const ScriptException &) {
     throw;
   } catch (RuntimeError &) {
     throw;
@@ -704,6 +1061,35 @@ Value Interpreter::readVariable(const std::string &name, int line, int column) {
     return _currentEnv->get(name);
   }
 
+  // Inside a struct method, bare field names resolve through `this`, and
+  // bare method names evaluate to bound method values.
+  if (name != "this" && _currentEnv->has("this")) {
+    const Value &th = _currentEnv->get("this");
+    if (ValueHelper::isStruct(th)) {
+      auto sv = std::get<StructPtr>(th);
+      auto it = sv->fields.find(name);
+      if (it != sv->fields.end()) {
+        return it->second;
+      }
+      auto declIt = _structs.find(sv->typeName);
+      if (declIt != _structs.end()) {
+        std::vector<ProcedureDeclPtr> methods;
+        for (const auto &m : declIt->second->methods) {
+          if (m->name == name) {
+            methods.push_back(m);
+          }
+        }
+        if (!methods.empty()) {
+          auto fv = std::make_shared<FunctionValue>();
+          fv->displayName = sv->typeName + "." + name;
+          fv->procs = std::move(methods);
+          fv->captured["this"] = th;
+          return fv;
+        }
+      }
+    }
+  }
+
   auto extIt = _externalVariables.find(name);
   if (extIt != _externalVariables.end()) {
     if (!extIt->second.getter) {
@@ -711,6 +1097,16 @@ Value Interpreter::readVariable(const std::string &name, int line, int column) {
                          column);
     }
     return extIt->second.getter();
+  }
+
+  // A bare procedure name evaluates to a function value, enabling
+  // `auto f = add; f(1, 2)` and passing procedures as arguments.
+  auto pit = _procedures.find(name);
+  if (pit != _procedures.end() && !pit->second.empty()) {
+    auto fv = std::make_shared<FunctionValue>();
+    fv->displayName = name;
+    fv->procs = pit->second;
+    return fv;
   }
 
   throw runtimeError("Undefined variable: " + name, line, column);
@@ -721,6 +1117,35 @@ void Interpreter::writeVariable(const std::string &name, const Value &value,
   if (_currentEnv->has(name)) {
     _currentEnv->assign(name, value);
     return;
+  }
+
+  // Inside a struct method, writes to bare field names update `this`.
+  if (name != "this" && _currentEnv->has("this")) {
+    const Value &th = _currentEnv->get("this");
+    if (ValueHelper::isStruct(th)) {
+      auto sv = std::get<StructPtr>(th);
+      auto it = sv->fields.find(name);
+      if (it != sv->fields.end()) {
+        StructDeclPtr decl = getStruct(sv->typeName);
+        if (decl) {
+          size_t fi = 0;
+          for (size_t i = 0; i < decl->fields.size(); ++i) {
+            if (decl->fields[i].name == name) {
+              fi = i;
+              break;
+            }
+          }
+          try {
+            it->second = convertToType(value, decl->fields[fi].type);
+          } catch (const std::exception &e) {
+            throw runtimeError(e.what(), line, column);
+          }
+        } else {
+          it->second = value;
+        }
+        return;
+      }
+    }
   }
 
   auto extIt = _externalVariables.find(name);
@@ -779,8 +1204,69 @@ Value Interpreter::evaluateMapLiteral(MapLiteralExpr *expr) {
   return m;
 }
 
+// Normalize a possibly-negative index (-1 = last element). Throws on
+// out-of-bounds; `what` customizes the message ("Array"/"String").
+int64_t Interpreter::normalizeIndex(int64_t raw, size_t size, int line,
+                                    int column) {
+  int64_t idx = raw < 0 ? raw + static_cast<int64_t>(size) : raw;
+  if (idx < 0 || idx >= static_cast<int64_t>(size)) {
+    throw runtimeError("Index out of bounds", line, column);
+  }
+  return idx;
+}
+
+Value Interpreter::evaluateSlice(const Value &container, IndexExpr *expr) {
+  int64_t size;
+  bool isStr = std::holds_alternative<std::string>(container);
+  if (isStr) {
+    size = static_cast<int64_t>(std::get<std::string>(container).size());
+  } else if (ValueHelper::isArray(container)) {
+    size = static_cast<int64_t>(ValueHelper::arrayElements(container).size());
+  } else {
+    throw runtimeError("Slicing requires an array or string", expr->line,
+                       expr->column);
+  }
+
+  int64_t begin = 0;
+  int64_t end = size;
+  if (expr->indexExpr) {
+    begin = ValueHelper::toInt64(evaluate(expr->indexExpr));
+  }
+  if (expr->endIndex) {
+    end = ValueHelper::toInt64(evaluate(expr->endIndex));
+  }
+  if (begin < 0) {
+    begin += size;
+  }
+  if (end < 0) {
+    end += size;
+  }
+  begin = std::max<int64_t>(0, std::min<int64_t>(begin, size));
+  end = std::max<int64_t>(0, std::min<int64_t>(end, size));
+  if (end < begin) {
+    end = begin;
+  }
+
+  if (isStr) {
+    std::string out = std::get<std::string>(container).substr(
+        static_cast<size_t>(begin), static_cast<size_t>(end - begin));
+    checkStringLength(out.size());
+    return out;
+  }
+
+  const auto &elems = ValueHelper::arrayElements(container);
+  std::vector<Value> out(elems.begin() + begin, elems.begin() + end);
+  noteArrayAllocation(out.size());
+  return ValueHelper::createArray(ValueHelper::arrayElementType(container),
+                                  std::move(out));
+}
+
 Value Interpreter::evaluateIndex(IndexExpr *expr) {
   Value arrayVal = evaluate(expr->arrayExpr);
+
+  if (expr->isSlice) {
+    return evaluateSlice(arrayVal, expr);
+  }
 
   // Maps index by their declared key type
   if (ValueHelper::isMap(arrayVal)) {
@@ -799,14 +1285,18 @@ Value Interpreter::evaluateIndex(IndexExpr *expr) {
     return it->second;
   }
 
-  // Strings index to their characters
+  // Strings index to their characters; negative indices count from the end.
   if (std::holds_alternative<std::string>(arrayVal)) {
     const std::string &s = std::get<std::string>(arrayVal);
     Value indexVal = evaluate(expr->indexExpr);
-    uint64_t idx = ValueHelper::toUInt64(indexVal);
-    if (idx >= s.size()) {
-      throw runtimeError("String index out of bounds", expr->line,
-                         expr->column);
+    int64_t idx;
+    try {
+      idx = normalizeIndex(ValueHelper::toInt64(indexVal), s.size(),
+                           expr->line, expr->column);
+    } catch (RuntimeError &) {
+      throw;
+    } catch (const std::exception &e) {
+      throw runtimeError(e.what(), expr->line, expr->column);
     }
     return static_cast<char>(s[static_cast<size_t>(idx)]);
   }
@@ -816,14 +1306,18 @@ Value Interpreter::evaluateIndex(IndexExpr *expr) {
   }
 
   Value indexVal = evaluate(expr->indexExpr);
-  uint64_t idx = ValueHelper::toUInt64(indexVal);
-
   const auto &elems = ValueHelper::arrayElements(arrayVal);
-  if (idx >= elems.size()) {
-    throw runtimeError("Array index out of bounds", expr->line, expr->column);
+  int64_t idx;
+  try {
+    idx = normalizeIndex(ValueHelper::toInt64(indexVal), elems.size(),
+                         expr->line, expr->column);
+  } catch (RuntimeError &) {
+    throw;
+  } catch (const std::exception &e) {
+    throw runtimeError(e.what(), expr->line, expr->column);
   }
 
-  return elems[idx];
+  return elems[static_cast<size_t>(idx)];
 }
 
 Value Interpreter::evaluateBinary(BinaryExpr *expr) {
@@ -944,12 +1438,72 @@ Value Interpreter::evaluateMember(MemberExpr *expr) {
                        expr->column);
   }
   auto it = sv->fields.find(expr->member);
-  if (it == sv->fields.end()) {
-    throw runtimeError("Struct '" + sv->typeName + "' has no field '" +
-                           expr->member + "'",
-                       expr->line, expr->column);
+  if (it != sv->fields.end()) {
+    return it->second;
   }
-  return it->second;
+
+  // Struct method: `obj.m` evaluates to a bound function value carrying
+  // `this`, so `obj.m(x)` and `auto f = obj.m; f(x)` both work.
+  auto declIt = _structs.find(sv->typeName);
+  if (declIt != _structs.end()) {
+    std::vector<ProcedureDeclPtr> methods;
+    for (const auto &m : declIt->second->methods) {
+      if (m->name == expr->member) {
+        methods.push_back(m);
+      }
+    }
+    if (!methods.empty()) {
+      auto fv = std::make_shared<FunctionValue>();
+      fv->displayName = sv->typeName + "." + expr->member;
+      fv->procs = std::move(methods);
+      fv->captured["this"] = object;
+      return fv;
+    }
+  }
+
+  throw runtimeError("Struct '" + sv->typeName + "' has no field or method '" +
+                         expr->member + "'",
+                     expr->line, expr->column);
+}
+
+Value Interpreter::evaluateLambda(LambdaExpr *expr) {
+  auto fv = std::make_shared<FunctionValue>();
+  fv->displayName = "<lambda>";
+  fv->parameters = expr->parameters;
+  fv->body = expr->body;
+  fv->hasRetType = expr->hasRetType;
+  fv->declaredRetType = expr->declaredRetType;
+  fv->captured = _currentEnv->snapshot();
+  return fv;
+}
+
+Value Interpreter::evaluateEnumMember(EnumMemberExpr *expr) {
+  // A same-named variable holding a struct shadows the enum type name,
+  // keeping `Color.RED` usable even when a local named Color exists.
+  if (_currentEnv->has(expr->enumName)) {
+    Value v = _currentEnv->get(expr->enumName);
+    if (ValueHelper::isStruct(v)) {
+      StructPtr sv = std::get<StructPtr>(v);
+      auto it = sv->fields.find(expr->memberName);
+      if (it != sv->fields.end()) {
+        return it->second;
+      }
+    }
+  }
+
+  auto eit = _enums.find(expr->enumName);
+  if (eit == _enums.end()) {
+    throw runtimeError("Unknown enum '" + expr->enumName + "'", expr->line,
+                       expr->column);
+  }
+  for (const auto &m : eit->second->members) {
+    if (m.first == expr->memberName) {
+      return static_cast<int64_t>(m.second);
+    }
+  }
+  throw runtimeError("Enum '" + expr->enumName + "' has no member '" +
+                         expr->memberName + "'",
+                     expr->line, expr->column);
 }
 
 Value Interpreter::constructStruct(const StructDeclPtr &decl,
@@ -983,6 +1537,9 @@ Value Interpreter::constructStruct(const StructDeclPtr &decl,
 // Default-initialized value for a declared type (used by `T x;` and by
 // struct fields that have no initializer).
 Value Interpreter::defaultValue(const TypeInfo &type) {
+  if (type.isFunction) {
+    return FuncPtr(nullptr);
+  }
   if (type.isMap) {
     TypeInfo valT = type.mapValueType ? *type.mapValueType
                                     : TypeInfo(type.baseType);
@@ -1118,16 +1675,21 @@ Value Interpreter::evaluateUpdate(UpdateExpr *expr) {
                          expr->line, expr->column);
     }
     Value indexVal = evaluate(idx->indexExpr);
-    uint64_t i = ValueHelper::toUInt64(indexVal);
     auto &elems = ValueHelper::arrayElements(container);
-    if (i >= elems.size()) {
-      throw runtimeError("Array index out of bounds", expr->line, expr->column);
+    int64_t i;
+    try {
+      i = normalizeIndex(ValueHelper::toInt64(indexVal), elems.size(),
+                         expr->line, expr->column);
+    } catch (RuntimeError &) {
+      throw;
+    } catch (const std::exception &e) {
+      throw runtimeError(e.what(), expr->line, expr->column);
     }
-    Value old = elems[i];
+    Value old = elems[static_cast<size_t>(i)];
     Value next = bump(old);
     TypeInfo elemType = ValueHelper::arrayElementType(container);
     try {
-      elems[i] = convertToType(next, elemType);
+      elems[static_cast<size_t>(i)] = convertToType(next, elemType);
     } catch (const std::exception &e) {
       throw runtimeError(e.what(), expr->line, expr->column);
     }
@@ -1139,6 +1701,76 @@ Value Interpreter::evaluateUpdate(UpdateExpr *expr) {
 }
 
 Value Interpreter::evaluateCall(CallExpr *expr) {
+  // Arbitrary-expression callee: fn values, bound methods, chained calls
+  // like `makeAdder(2)(3)` or `handlers[i](x)`.
+  if (expr->calleeExpr) {
+    Value callee = evaluate(expr->calleeExpr);
+    std::vector<Value> args;
+    args.reserve(expr->arguments.size());
+    for (auto &argExpr : expr->arguments) {
+      args.push_back(evaluate(argExpr));
+    }
+    auto *fn = std::get_if<FuncPtr>(&callee);
+    if (!fn) {
+      throw runtimeError("Call target is not a function value", expr->line,
+                         expr->column);
+    }
+    return callFunctionValue(*fn, args, expr->line, expr->column);
+  }
+
+  // A variable holding a function value shadows procedures, externals, and
+  // builtins: `auto f = add; f(1, 2)`. Checked before the inline cache so a
+  // later-defined variable correctly shadows a cached procedure.
+  if (_currentEnv->has(expr->functionName)) {
+    Value v = _currentEnv->get(expr->functionName);
+    auto *fn = std::get_if<FuncPtr>(&v);
+    if (!fn) {
+      throw runtimeError("'" + expr->functionName +
+                             "' is not a function value",
+                         expr->line, expr->column);
+    }
+    std::vector<Value> args;
+    args.reserve(expr->arguments.size());
+    for (auto &argExpr : expr->arguments) {
+      args.push_back(evaluate(argExpr));
+    }
+    _callSiteLine = expr->line;
+    _callSiteColumn = expr->column;
+    return callFunctionValue(*fn, args, expr->line, expr->column);
+  }
+
+  // Inside a struct method, a bare `method(...)` calls the sibling method on
+  // `this` (member functions hide outer procedures, mirroring C++).
+  if (_currentEnv->has("this")) {
+    const Value &th = _currentEnv->get("this");
+    if (ValueHelper::isStruct(th)) {
+      auto sv = std::get<StructPtr>(th);
+      auto declIt = _structs.find(sv->typeName);
+      if (declIt != _structs.end()) {
+        std::vector<ProcedureDeclPtr> methods;
+        for (const auto &m : declIt->second->methods) {
+          if (m->name == expr->functionName) {
+            methods.push_back(m);
+          }
+        }
+        if (!methods.empty()) {
+          std::vector<Value> args;
+          args.reserve(expr->arguments.size());
+          for (auto &argExpr : expr->arguments) {
+            args.push_back(evaluate(argExpr));
+          }
+          auto fv = std::make_shared<FunctionValue>();
+          fv->displayName = sv->typeName + "." + expr->functionName;
+          fv->procs = std::move(methods);
+          fv->captured["this"] = th;
+          _callSiteLine = expr->line;
+          _callSiteColumn = expr->column;
+          return callFunctionValue(fv, args, expr->line, expr->column);
+        }
+      }
+    }
+  }
+
   // Inline cache for procedures / externals
   if (expr->cacheVersion == _callCacheVersion) {
     if (expr->cachedIsProcedure) {
@@ -1165,20 +1797,43 @@ Value Interpreter::evaluateCall(CallExpr *expr) {
     }
   }
 
-  // Check if it's a procedure call
-  if (auto it = _procedures.find(expr->functionName); it != _procedures.end()) {
-    expr->cacheVersion = _callCacheVersion;
-    expr->cachedIsProcedure = true;
-    expr->cachedIsExternal = false;
-    expr->cachedProcedure = it->second;
+  // Check if it's a procedure call (possibly overloaded)
+  if (auto it = _procedures.find(expr->functionName);
+      it != _procedures.end() && !it->second.empty()) {
     std::vector<Value> args;
     args.reserve(expr->arguments.size());
     for (auto &argExpr : expr->arguments) {
       args.push_back(evaluate(argExpr));
     }
+    ProcedureDeclPtr proc = it->second.size() == 1
+                                ? it->second.front()
+                                : resolveOverload(expr->functionName,
+                                                  it->second, args, expr->line,
+                                                  expr->column);
+    if (it->second.size() == 1) {
+      expr->cacheVersion = _callCacheVersion;
+      expr->cachedIsProcedure = true;
+      expr->cachedIsExternal = false;
+      expr->cachedProcedure = proc;
+    }
     _callSiteLine = expr->line;
     _callSiteColumn = expr->column;
-    return executeProcedure(it->second, args);
+    return executeProcedure(proc, args);
+  }
+
+  // An external variable may also yield a function value.
+  if (auto vit = _externalVariables.find(expr->functionName);
+      vit != _externalVariables.end() && vit->second.getter) {
+    Value v = vit->second.getter();
+    if (std::holds_alternative<FuncPtr>(v)) {
+      std::vector<Value> args;
+      args.reserve(expr->arguments.size());
+      for (auto &argExpr : expr->arguments) {
+        args.push_back(evaluate(argExpr));
+      }
+      return callFunctionValue(std::get<FuncPtr>(v), args, expr->line,
+                               expr->column);
+    }
   }
 
   // Check if it's a registered external function
@@ -1211,8 +1866,10 @@ Value Interpreter::evaluateCall(CallExpr *expr) {
   }
 
   // Built-ins are the lowest precedence: procedures and host-registered
-  // external functions may override them.
-  if (Builtins::isBuiltin(expr->functionName)) {
+  // external functions may override them. Sandboxed environments can
+  // disable individual builtins entirely.
+  if (Builtins::isBuiltin(expr->functionName) &&
+      isBuiltinEnabled(expr->functionName)) {
     Value r = Builtins::call(*this, expr->functionName, expr);
     checkResultSize(r);
     return r;
@@ -1229,9 +1886,25 @@ void Interpreter::executeExpression(ExpressionStmt *stmt) {
 void Interpreter::executeVarDecl(VarDeclStmt *stmt) {
   Value value;
 
+  if (stmt->type.isAuto) {
+    // `auto` — the validator normally resolves the type ahead of time, but
+    // a dynamically-typed initializer (unknown at compile time) keeps the
+    // value as-is.
+    if (!stmt->initializer) {
+      throw runtimeError("'auto' variable requires an initializer",
+                         stmt->line, stmt->column);
+    }
+    _currentEnv->define(stmt->name, evaluate(stmt->initializer));
+    return;
+  }
+
   if (stmt->initializer) {
     value = evaluate(stmt->initializer);
-    value = convertToType(value, stmt->type);
+    try {
+      value = convertToType(value, stmt->type);
+    } catch (const std::exception &e) {
+      throw runtimeError(e.what(), stmt->line, stmt->column);
+    }
   } else {
     try {
       value = defaultValue(stmt->type);
@@ -1300,6 +1973,34 @@ void Interpreter::executeAssign(AssignStmt *stmt) {
                                  value, stmt->line, stmt->column);
     _currentEnv->assign(stmt->variableName, result);
     return;
+  }
+
+  // Inside a struct method, `field = v` assigns through `this`.
+  if (stmt->variableName != "this" && _currentEnv->has("this")) {
+    const Value &th = _currentEnv->get("this");
+    if (ValueHelper::isStruct(th)) {
+      auto sv = std::get<StructPtr>(th);
+      auto it = sv->fields.find(stmt->variableName);
+      if (it != sv->fields.end()) {
+        Value result =
+            applyAssignOp(stmt->op, it->second, value, stmt->line, stmt->column);
+        StructDeclPtr decl = getStruct(sv->typeName);
+        if (decl) {
+          for (const auto &f : decl->fields) {
+            if (f.name == stmt->variableName) {
+              try {
+                result = convertToType(result, f.type);
+              } catch (const std::exception &e) {
+                throw runtimeError(e.what(), stmt->line, stmt->column);
+              }
+              break;
+            }
+          }
+        }
+        it->second = result;
+        return;
+      }
+    }
   }
 
   auto extIt = _externalVariables.find(stmt->variableName);
@@ -1373,18 +2074,22 @@ void Interpreter::executeIndexAssign(IndexAssignStmt *stmt) {
   }
 
   Value indexVal = evaluate(stmt->indexExpr);
-  uint64_t idx = ValueHelper::toUInt64(indexVal);
-
   std::vector<Value> &elems = ValueHelper::arrayElements(arrayVal);
-  if (idx >= elems.size()) {
-    throw runtimeError("Array index out of bounds", stmt->line, stmt->column);
+  int64_t idx;
+  try {
+    idx = normalizeIndex(ValueHelper::toInt64(indexVal), elems.size(),
+                         stmt->line, stmt->column);
+  } catch (RuntimeError &) {
+    throw;
+  } catch (const std::exception &e) {
+    throw runtimeError(e.what(), stmt->line, stmt->column);
   }
 
   TypeInfo elementType = ValueHelper::arrayElementType(arrayVal);
   Value rawValue = evaluate(stmt->value);
   if (stmt->op != AssignStmt::Operator::ASSIGN) {
-    rawValue = applyAssignOp(stmt->op, elems[idx], rawValue, stmt->line,
-                             stmt->column);
+    rawValue = applyAssignOp(stmt->op, elems[static_cast<size_t>(idx)], rawValue,
+                             stmt->line, stmt->column);
   }
   Value converted;
   try {
@@ -1393,7 +2098,7 @@ void Interpreter::executeIndexAssign(IndexAssignStmt *stmt) {
     throw runtimeError(e.what(), stmt->line, stmt->column);
   }
 
-  elems[idx] = converted;
+  elems[static_cast<size_t>(idx)] = converted;
 }
 
 void Interpreter::executeMemberAssign(MemberAssignStmt *stmt) {
@@ -1649,6 +2354,81 @@ void Interpreter::executeContinue(ContinueStmt * /*stmt*/) {
   throw ContinueException();
 }
 
+void Interpreter::executeThrow(ThrowStmt *stmt) {
+  Value v = evaluate(stmt->value);
+  throw ScriptException(v, _currentFile, stmt->line, stmt->column,
+                        _currentProcedure);
+}
+
+void Interpreter::executeTryCatch(TryCatchStmt *stmt) {
+  bool caught = false;
+  Value thrown;
+
+  try {
+    execute(stmt->tryBlock);
+  } catch (const ScriptException &se) {
+    caught = true;
+    thrown = se.value;
+  } catch (const RuntimeError &re) {
+    if (re.fatal) {
+      // Resource-limit violations are not script-catchable.
+      if (stmt->finallyBlock) {
+        execute(stmt->finallyBlock);
+      }
+      throw;
+    }
+    caught = true;
+    thrown = std::string(re.what());
+  } catch (...) {
+    // return/break/continue propagate, but finally still runs.
+    if (stmt->finallyBlock) {
+      execute(stmt->finallyBlock);
+    }
+    throw;
+  }
+
+  try {
+    if (caught) {
+      if (stmt->catchBlock) {
+        _currentEnv->enterScope();
+        try {
+          if (!stmt->catchVar.empty()) {
+            Value bound = thrown;
+            if (!stmt->catchType.isAuto) {
+              try {
+                bound = convertToType(thrown, stmt->catchType);
+              } catch (const std::exception &e) {
+                throw runtimeError(
+                    std::string("catch variable: ") + e.what(), stmt->line,
+                    stmt->column);
+              }
+            }
+            _currentEnv->define(stmt->catchVar, bound);
+          }
+          execute(stmt->catchBlock);
+          _currentEnv->exitScope();
+        } catch (...) {
+          _currentEnv->exitScope();
+          throw;
+        }
+      } else {
+        // No catch clause: rethrow after finally runs.
+        throw ScriptException(thrown, _currentFile, stmt->line, stmt->column,
+                              _currentProcedure);
+      }
+    }
+  } catch (...) {
+    if (stmt->finallyBlock) {
+      execute(stmt->finallyBlock);
+    }
+    throw;
+  }
+
+  if (stmt->finallyBlock) {
+    execute(stmt->finallyBlock);
+  }
+}
+
 RuntimeError Interpreter::runtimeError(const std::string &message, int line,
                                        int column) {
   return RuntimeError(message, _currentFile, line, column, _currentProcedure);
@@ -1661,12 +2441,74 @@ void Interpreter::consumeExecutionStep(int line, int column) {
 
   ++_currentSteps;
   if (_currentSteps > _maxSteps) {
-    throw runtimeError("Maximum execution steps exceeded", line, column);
+    throw RuntimeError("Maximum execution steps exceeded", _currentFile, line,
+                       column, _currentProcedure, /*fatal=*/true);
   }
 }
 
 Value Interpreter::convertToType(const Value &val, const TypeInfo &targetType) {
   TypeInfo sourceType = ValueHelper::getType(val);
+
+  // `auto` accepts the value unchanged (dynamic binding).
+  if (targetType.isAuto) {
+    return val;
+  }
+
+  // Function-typed targets accept only function values, and when the
+  // target's signature is fully specified the value's signature must be
+  // call-compatible (same arity; each target param convertible to the
+  // value's param — loose contravariance check). Overload sets pass when
+  // any candidate is compatible.
+  if (targetType.isFunction) {
+    auto *fv = std::get_if<FuncPtr>(&val);
+    if (!fv || !*fv) {
+      throw std::runtime_error("Expected function value, got '" +
+                               ValueHelper::typeToString(sourceType) + "'");
+    }
+    if (!targetType.paramTypes.empty()) {
+      auto sigCompatible = [&](const TypeInfo &sig) {
+        if (sig.paramTypes.size() != targetType.paramTypes.size()) {
+          return false;
+        }
+        for (size_t i = 0; i < targetType.paramTypes.size(); ++i) {
+          if (!sig.paramTypes[i].isAuto &&
+              !runtimeConvertible(targetType.paramTypes[i],
+                                  sig.paramTypes[i])) {
+            return false;
+          }
+        }
+        return true;
+      };
+      const FunctionValue &fvRef = **fv;
+      bool ok = false;
+      if (!fvRef.procs.empty()) {
+        for (const auto &p : fvRef.procs) {
+          std::vector<TypeInfo> params;
+          for (const auto &pr : p->parameters) {
+            params.push_back(pr.type);
+          }
+          if (sigCompatible(TypeInfo::functionOf(std::move(params),
+                                                 nullptr))) {
+            ok = true;
+            break;
+          }
+        }
+      } else {
+        ok = sigCompatible(fvRef.signature());
+      }
+      if (!ok) {
+        throw std::runtime_error(
+            "Function signature mismatch: value is not call-compatible "
+            "with '" +
+            ValueHelper::typeToString(targetType) + "'");
+      }
+    }
+    return val;
+  }
+  if (sourceType.isFunction) {
+    throw std::runtime_error("Cannot convert function to '" +
+                             ValueHelper::typeToString(targetType) + "'");
+  }
 
   // Struct targets accept only values of the same struct type.
   if (targetType.isStruct && !targetType.isArray) {

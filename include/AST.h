@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace Script {
@@ -111,6 +112,10 @@ class CallExpr : public Expression {
 public:
   std::string functionName;
   std::vector<ExprPtr> arguments;
+  // When set, the callee is an arbitrary expression evaluating to a function
+  // value or a struct method target (e.g. `getHandler()(x)`, `obj.m(x)`);
+  // functionName is then informational only.
+  ExprPtr calleeExpr;
 
   // Inline cache for call dispatch
   mutable uint64_t cacheVersion = 0;
@@ -122,6 +127,10 @@ public:
   CallExpr(const std::string &name, const std::vector<ExprPtr> &args,
            int ln = 0, int col = 0)
       : Expression(ln, col), functionName(name), arguments(args) {}
+
+  CallExpr(ExprPtr callee, const std::vector<ExprPtr> &args, int ln = 0,
+           int col = 0)
+      : Expression(ln, col), arguments(args), calleeExpr(std::move(callee)) {}
 };
 
 class ConditionalExpr : public Expression {
@@ -155,10 +164,17 @@ public:
 class IndexExpr : public Expression {
 public:
   ExprPtr arrayExpr;
-  ExprPtr indexExpr;
+  ExprPtr indexExpr;            // null for slices like arr[:end]
+  ExprPtr endIndex;             // non-null for slices arr[begin:end]
+  bool isSlice = false;
 
   IndexExpr(ExprPtr arr, ExprPtr idx, int ln = 0, int col = 0)
       : Expression(ln, col), arrayExpr(arr), indexExpr(idx) {}
+
+  IndexExpr(ExprPtr arr, ExprPtr begin, ExprPtr end, bool slice, int ln = 0,
+            int col = 0)
+      : Expression(ln, col), arrayExpr(arr), indexExpr(begin),
+        endIndex(end), isSlice(slice) {}
 };
 
 // Member access on a struct value: obj.field
@@ -169,6 +185,39 @@ public:
 
   MemberExpr(ExprPtr obj, const std::string &m, int ln = 0, int col = 0)
       : Expression(ln, col), object(obj), member(m) {}
+};
+
+// Function/lambda parameter (also used for struct fields and enum entries).
+struct Parameter {
+  TypeInfo type;
+  std::string name;
+  ExprPtr defaultValue; // optional default argument expression
+};
+
+// Lambda expression: fn(type p, ...) { body } or fn(type p, ...) -> T { ... }.
+// Captures the visible environment by value at creation.
+class LambdaExpr : public Expression {
+public:
+  std::vector<Parameter> parameters; // type.isAuto => dynamic param
+  StmtPtr body;
+  bool hasRetType = false;
+  TypeInfo declaredRetType;
+
+  LambdaExpr(std::vector<Parameter> params, StmtPtr b, TypeInfo ret,
+             bool hasRet, int ln = 0, int col = 0)
+      : Expression(ln, col), parameters(std::move(params)), body(b),
+        hasRetType(hasRet), declaredRetType(ret) {}
+};
+
+// Enum member reference: Color.RED
+class EnumMemberExpr : public Expression {
+public:
+  std::string enumName;
+  std::string memberName;
+
+  EnumMemberExpr(const std::string &e, const std::string &m, int ln = 0,
+                 int col = 0)
+      : Expression(ln, col), enumName(e), memberName(m) {}
 };
 
 // Interpolated string literal, e.g. "name=${name}, id=${id + 1}"
@@ -203,7 +252,7 @@ public:
 
 class VarDeclStmt : public Statement {
 public:
-  TypeInfo type;
+  TypeInfo type; // type.isAuto => deduced from initializer at compile time
   std::string name;
   ExprPtr initializer;
   bool isConst;
@@ -365,12 +414,32 @@ public:
       : Statement(ln, col), body(b), condition(cond) {}
 };
 
-// Procedure Declaration
-struct Parameter {
-  TypeInfo type;
-  std::string name;
+// throw expr;
+class ThrowStmt : public Statement {
+public:
+  ExprPtr value;
+
+  ThrowStmt(ExprPtr v, int ln = 0, int col = 0)
+      : Statement(ln, col), value(v) {}
 };
 
+// try { } catch ([type] e) { } [finally { }]
+// catchVar empty => plain `catch { }` (no binding).
+class TryCatchStmt : public Statement {
+public:
+  StmtPtr tryBlock;
+  TypeInfo catchType;    // isAuto (or absent var) => no conversion
+  std::string catchVar;
+  StmtPtr catchBlock;    // null when only finally is present
+  StmtPtr finallyBlock;  // optional
+
+  TryCatchStmt(StmtPtr t, TypeInfo ct, const std::string &cv, StmtPtr cb,
+               StmtPtr fb, int ln = 0, int col = 0)
+      : Statement(ln, col), tryBlock(t), catchType(ct), catchVar(cv),
+        catchBlock(cb), finallyBlock(fb) {}
+};
+
+// Procedure Declaration
 class ProcedureDecl : public ASTNode {
 public:
   TypeInfo returnType;
@@ -387,11 +456,14 @@ public:
 
 using ProcedureDeclPtr = std::shared_ptr<ProcedureDecl>;
 
-// struct Name { type field; ... } — fields reuse Parameter (type + name)
+// struct Name { type field; retType method(params) { ... } ... }
+// fields reuse Parameter (type + name); methods are procedures bound to a
+// `this` value on invocation.
 class StructDecl : public ASTNode {
 public:
   std::string name;
   std::vector<Parameter> fields;
+  std::vector<ProcedureDeclPtr> methods;
 
   StructDecl(const std::string &n, const std::vector<Parameter> &f, int ln = 0,
              int col = 0)
@@ -400,12 +472,59 @@ public:
 
 using StructDeclPtr = std::shared_ptr<StructDecl>;
 
+// enum Name { A, B = 4, C } — members are int64 constants accessed as
+// Name.A; values auto-increment from the previous member (default 0).
+class EnumDecl : public ASTNode {
+public:
+  std::string name;
+  std::vector<std::pair<std::string, int64_t>> members;
+
+  EnumDecl(const std::string &n,
+           std::vector<std::pair<std::string, int64_t>> m, int ln = 0,
+           int col = 0)
+      : ASTNode(ln, col), name(n), members(std::move(m)) {}
+};
+
+using EnumDeclPtr = std::shared_ptr<EnumDecl>;
+
+// Runtime representation of a function value: either a lambda (params +
+// body + captured variables) or a reference to a named procedure.
+struct FunctionValue {
+  std::string displayName;
+  std::vector<Parameter> parameters;   // empty when wrapping a procedure
+  StmtPtr body;                        // null when wrapping a procedure
+  TypeInfo declaredRetType;            // meaningful iff hasRetType
+  bool hasRetType = false;
+  std::unordered_map<std::string, Value> captured; // lambda captures (by copy)
+  // Procedure references and bound methods (may be an overload set).
+  std::vector<ProcedureDeclPtr> procs;
+
+  TypeInfo signature() const {
+    std::vector<TypeInfo> params;
+    if (!procs.empty()) {
+      for (const auto &p : procs.front()->parameters) {
+        params.push_back(p.type);
+      }
+      return TypeInfo::functionOf(
+          std::move(params),
+          std::make_shared<TypeInfo>(procs.front()->returnType));
+    }
+    for (const auto &p : parameters) {
+      params.push_back(p.type);
+    }
+    return TypeInfo::functionOf(
+        std::move(params),
+        hasRetType ? std::make_shared<TypeInfo>(declaredRetType) : nullptr);
+  }
+};
+
 // Script (collection of procedures)
 class Script {
 public:
   std::string filename;
   std::vector<ProcedureDeclPtr> procedures;
   std::vector<StructDeclPtr> structs;
+  std::vector<EnumDeclPtr> enums;
   // import "path"; directives: (path, line)
   std::vector<std::pair<std::string, int>> imports;
 

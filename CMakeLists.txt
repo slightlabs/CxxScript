@@ -13,6 +13,8 @@ include(CMakePackageConfigHelpers)
 # library without pulling in GoogleTest or building the example binaries.
 option(CXXSCRIPT_BUILD_TESTS "Build the CxxScript test suite" ON)
 option(CXXSCRIPT_BUILD_EXAMPLES "Build the CxxScript example/demo executables" ON)
+option(CXXSCRIPT_BUILD_FUZZERS "Build libFuzzer harnesses (requires clang)" OFF)
+option(CXXSCRIPT_BUILD_BENCHMARKS "Build the benchmark runner" OFF)
 
 # Compiler flags
 if(MSVC)
@@ -65,6 +67,7 @@ set(LIBRARY_SOURCES
     ${SRC_DIR}/Interpreter.cpp
     ${SRC_DIR}/Builtins.cpp
     ${SRC_DIR}/ScriptManager.cpp
+    ${SRC_DIR}/Formatter.cpp
 )
 
 # Library header files
@@ -77,6 +80,7 @@ set(LIBRARY_HEADERS
     ${INCLUDE_DIR}/Interpreter.h
     ${INCLUDE_DIR}/Builtins.h
     ${INCLUDE_DIR}/ScriptManager.h
+    ${INCLUDE_DIR}/Formatter.h
 )
 
 # Create static library
@@ -165,6 +169,7 @@ set(CXXSCRIPT_TEST_SOURCES
     test_hot_reload
     test_debugger
     test_struct
+    test_language_v2
 )
 
 set(CXXSCRIPT_TEST_TARGETS "")
@@ -189,6 +194,36 @@ add_custom_target(run_tests
     DEPENDS ${CXXSCRIPT_TEST_TARGETS}
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
+endif()
+
+# Fuzzing harnesses: lexer, parser, and end-to-end script execution.
+# Requires clang (-fsanitize=fuzzer,address,undefined).
+if(CXXSCRIPT_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "CXXSCRIPT_BUILD_FUZZERS requires clang — reconfigure with "
+            "-DCMAKE_CXX_COMPILER=clang++")
+    endif()
+    foreach(fuzz_target IN ITEMS fuzz_lexer fuzz_parser fuzz_script)
+        add_executable(${fuzz_target} ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/${fuzz_target}.cpp)
+        target_link_libraries(${fuzz_target} PRIVATE CxxScript)
+        target_compile_options(${fuzz_target} PRIVATE
+            -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+        target_link_options(${fuzz_target} PRIVATE
+            -fsanitize=fuzzer,address,undefined)
+        set_target_properties(${fuzz_target} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/fuzz
+        )
+    endforeach()
+endif()
+
+# Dependency-free benchmark runner.
+if(CXXSCRIPT_BUILD_BENCHMARKS)
+    add_executable(cxxscript_bench ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/bench.cpp)
+    target_link_libraries(cxxscript_bench PRIVATE CxxScript)
+    set_target_properties(cxxscript_bench PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
 endif()
 
 # Installation rules

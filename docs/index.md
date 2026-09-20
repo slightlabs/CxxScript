@@ -32,13 +32,15 @@ manager.executeProcedure("factorial", {static_cast<int32_t>(5)}, result, error);
 | Category | Support |
 |---|---|
 | Scalar types | `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float`, `double`, `char`, `string`, `bool` |
-| Arrays | Typed arrays of any scalar, e.g. `int32[]`, with literals, indexing, `len()`, `push()`, `pop()` |
-| Operators | Arithmetic (`+ - * / %`), bitwise (`& \| ^ ~ << >>`), logical (`! && \|\|` with short-circuit) |
-| Control flow | `if/else`, `while`, `for`, `do-while`, `switch/case/default`, ternary `?:`, `break`/`continue` |
-| Assignment | `=`, `+=`, `-=`, `*=`, `/=` |
-| Procedures | Cross-procedure and cross-file calls |
-| Host integration | External function callbacks, external (read/write or read-only) variables |
-| Errors | Compile-time and runtime errors with line/column/procedure context |
+| Containers | Nested arrays (`int32[][]`), `map<K, V>` with container values, structs with methods, enums — with literals, negative indexing, slicing, deep equality |
+| Operators | Arithmetic (`+ - * / %`, fmod on floats), bitwise (`& \| ^ ~ << >>`), logical (`! && \|\|` with short-circuit), `++`/`--`, ternary |
+| Control flow | `if/else`, `while`, `for`, range-`for`, `do-while`, `switch/case/default`, `break`/`continue`, `try`/`catch`/`finally`/`throw` |
+| Functions | Overloads, default parameters, lambdas with captures, first-class `fn` values, bound methods |
+| Procedures | Cross-procedure and cross-file calls, hot reload |
+| Host integration | Typed external function callbacks, external (read/write or read-only) variables, output redirection |
+| Errors | Compile-time and runtime errors with line/column/procedure context, stack traces, script exceptions |
+| Safety | Call-depth/step/memory limits (fatal, not script-catchable), import sandboxing, builtin disabling |
+| Tooling | `cxxscript` CLI: run, check, eval, fmt formatter, statement-level debugger, REPL |
 
 ## Where to go next
 

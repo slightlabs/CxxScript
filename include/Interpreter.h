@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Script {
@@ -31,11 +32,14 @@ public:
   std::string procedureName;
   // Ordered innermost-first: frames appended as the error unwinds.
   std::vector<StackFrame> trace;
+  // Fatal errors (resource-limit violations) cannot be caught by script
+  // try/catch — otherwise a hostile script could swallow guardrail hits.
+  bool fatal = false;
 
   RuntimeError(const std::string &message, const std::string &file, int ln,
-               int col, const std::string &procName = "")
+               int col, const std::string &procName = "", bool fatalErr = false)
       : std::runtime_error(message), filename(file), line(ln), column(col),
-        procedureName(procName) {}
+        procedureName(procName), fatal(fatalErr) {}
 };
 
 class ReturnException : public std::exception {
@@ -46,6 +50,22 @@ public:
 
 class BreakException : public std::exception {};
 class ContinueException : public std::exception {};
+
+// Thrown by a script `throw` statement; deliberately NOT a std::exception so
+// it propagates untouched through the engine's generic error handlers until
+// a script `catch` (or the top-level entry point) receives it.
+class ScriptException {
+public:
+  Value value;
+  std::string file;
+  int line;
+  int column;
+  std::string procedure;
+
+  ScriptException(const Value &v, const std::string &f, int ln, int col,
+                  const std::string &proc)
+      : value(v), file(f), line(ln), column(col), procedure(proc) {}
+};
 
 // External function callback
 using ExternalFunctionCallback =
@@ -99,10 +119,17 @@ public:
   // Load a script (add procedures to the interpreter)
   void loadScript(ScriptPtr script);
 
-  // Hot-reload support: remove a procedure (returns its old declaration, or
-  // nullptr) and add a standalone declaration (e.g. to restore on failure).
+  // Hot-reload support: remove all overloads of a procedure (returns the
+  // first old declaration, or nullptr) and add a standalone declaration
+  // (same-signature declarations replace, others overload).
   ProcedureDeclPtr removeProcedure(const std::string &name);
   void addProcedure(const ProcedureDeclPtr &proc, const std::string &file);
+
+  // Sandboxing: individual builtins can be turned off for untrusted
+  // scripts. A disabled builtin resolves like an undefined function.
+  void disableBuiltin(const std::string &name);
+  void enableBuiltin(const std::string &name);
+  bool isBuiltinEnabled(const std::string &name) const;
 
   // Optional execution guardrails (0 means unlimited)
   void setExecutionLimits(size_t maxCallDepth, size_t maxSteps);
@@ -121,13 +148,16 @@ public:
   void setOutputCallback(OutputCallback cb);
 
   // Debug hook: invoked before each statement executes. Receives the current
-  // source location, procedure name, and a snapshot of visible variables.
+  // source location, procedure name, a snapshot of visible variables, and
+  // call-stack state (callStack.back() == procedure).
   struct DebugContext {
     std::string filename;
     int line;
     int column;
     std::string procedure;
     std::unordered_map<std::string, Value> variables;
+    size_t callDepth = 0;
+    std::vector<std::string> callStack;
   };
   using DebugHook = std::function<void(const DebugContext &)>;
   void setDebugHook(DebugHook cb);
@@ -155,6 +185,17 @@ public:
   bool hasStruct(const std::string &name) const;
   StructDeclPtr getStruct(const std::string &name) const;
   std::vector<std::string> getStructNames() const;
+
+  // Enum declarations (loaded with scripts; shared across files)
+  void addEnum(const EnumDeclPtr &decl, const std::string &file);
+  EnumDeclPtr removeEnum(const std::string &name);
+  bool hasEnum(const std::string &name) const;
+  EnumDeclPtr getEnum(const std::string &name) const;
+  std::vector<std::string> getEnumNames() const;
+
+  // Invoke a function value (lambda, procedure reference, bound method).
+  Value callFunctionValue(const FuncPtr &fn, const std::vector<Value> &args,
+                          int line, int column);
 
   // Names of all loaded procedures
   std::vector<std::string> getProcedureNames() const;
@@ -191,11 +232,16 @@ private:
     static constexpr size_t GLOBAL = std::numeric_limits<size_t>::max();
   };
 
-  std::unordered_map<std::string, ProcedureDeclPtr> _procedures;
+  // Procedure overload sets: multiple declarations may share a name when
+  // their parameter type lists differ.
+  std::unordered_map<std::string, std::vector<ProcedureDeclPtr>> _procedures;
   std::unordered_map<ProcedureDecl *, std::string> _procedureFiles;
   std::unordered_map<std::string, StructDeclPtr> _structs;
   std::unordered_map<StructDecl *, std::string> _structFiles;
+  std::unordered_map<std::string, EnumDeclPtr> _enums;
+  std::unordered_map<EnumDecl *, std::string> _enumFiles;
   std::unordered_map<std::string, ExternalFunctionCallback> _externalFunctions;
+  std::unordered_set<std::string> _disabledBuiltins;
   struct ExternalVariable {
     ExternalVariableGetter getter;
     ExternalVariableSetter setter;
@@ -205,6 +251,7 @@ private:
   Environment *_currentEnv;
   std::string _currentProcedure;
   std::string _currentFile;
+  std::vector<std::string> _callStack; // procedure names, innermost last
   uint64_t _callCacheVersion = 1;
   size_t _maxCallDepth = 0;
   size_t _maxSteps = 0;
@@ -237,9 +284,29 @@ private:
   Value evaluateInterpolatedString(InterpolatedStringExpr *expr);
   Value evaluateUpdate(UpdateExpr *expr);
   Value evaluateMember(MemberExpr *expr);
+  Value evaluateLambda(LambdaExpr *expr);
+  Value evaluateEnumMember(EnumMemberExpr *expr);
+  Value evaluateSlice(const Value &container, IndexExpr *expr);
+  int64_t normalizeIndex(int64_t raw, size_t size, int line, int column);
   Value constructStruct(const StructDeclPtr &decl,
                         const std::vector<Value> &args, int line, int column);
   Value defaultValue(const TypeInfo &type);
+
+  // Overload resolution: pick the procedure in `overloads` best matching
+  // `args` (arity incl. defaults, then conversion cost). Throws on no/ambig.
+  ProcedureDeclPtr resolveOverload(const std::string &name,
+                                   const std::vector<ProcedureDeclPtr> &set,
+                                   const std::vector<Value> &args, int line,
+                                   int column);
+  // Whether a runtime value of type `src` can convert to `dst` without
+  // throwing (used for overload ranking; mirrors convertToType's rules).
+  bool runtimeConvertible(const TypeInfo &src, const TypeInfo &dst);
+  // Shared call machinery for procedures, lambdas, and bound methods.
+  Value invokeCallable(const std::string &name,
+                       const std::vector<Parameter> &params, StmtPtr body,
+                       const TypeInfo &retType, const std::string &file,
+                       const std::unordered_map<std::string, Value> *captures,
+                       std::vector<Value> args, int line, int column);
 
   void executeExpression(ExpressionStmt *stmt);
   void executeVarDecl(VarDeclStmt *stmt);
@@ -256,6 +323,8 @@ private:
   void executeIndexAssign(IndexAssignStmt *stmt);
   void executeMemberAssign(MemberAssignStmt *stmt);
   void executeForEach(ForEachStmt *stmt);
+  void executeThrow(ThrowStmt *stmt);
+  void executeTryCatch(TryCatchStmt *stmt);
 
   RuntimeError runtimeError(const std::string &message, int line, int column);
   void consumeExecutionStep(int line, int column);

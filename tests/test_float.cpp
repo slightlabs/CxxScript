@@ -106,9 +106,9 @@ TEST(FloatTest, ComparisonsAndConversions) {
   EXPECT_FLOAT_EQ(std::get<float>(result), 5.0f);
 }
 
-TEST(FloatTest, ModuloIsRejected) {
+TEST(FloatTest, ModuloUsesFmod) {
   std::string source = R"(
-        float bad(float a, float b) { return a % b; }
+        float fmod_(float a, float b) { return a % b; }
     )";
 
   ScriptManager manager;
@@ -118,11 +118,10 @@ TEST(FloatTest, ModuloIsRejected) {
   Value result;
   std::string errorMsg;
   bool ok = manager.executeProcedure(
-      "bad", {static_cast<float>(5.0f), static_cast<float>(2.0f)}, result,
+      "fmod_", {static_cast<float>(5.0f), static_cast<float>(2.0f)}, result,
       errorMsg);
-  EXPECT_FALSE(ok);
-  EXPECT_NE(errorMsg.find("Modulo not supported for floating point"),
-            std::string::npos);
+  ASSERT_TRUE(ok) << errorMsg;
+  EXPECT_FLOAT_EQ(std::get<float>(result), 1.0f);
 }
 
 TEST(FloatTest, ArrayOfFloats) {

@@ -35,6 +35,19 @@ struct TypeInfo {
     DataType keyType;       // valid only when isMap
     std::shared_ptr<TypeInfo> mapValueType; // full value type when isMap
     std::string structName; // declared name when isStruct
+    // Full element type when isArray. When null the element is the scalar
+    // described by the other fields (one-dimensional array, legacy form).
+    std::shared_ptr<TypeInfo> arrayElem;
+
+    // Function values (lambdas / procedure references)
+    bool isFunction = false;
+    std::vector<TypeInfo> paramTypes;              // empty = 0 params
+    std::shared_ptr<TypeInfo> retType;             // null = inferred/any
+    // When true the signature is intentionally unchecked: an overloaded
+    // procedure reference whose target signature is chosen per call.
+    bool fnOpaque = false;
+
+    bool isAuto = false; // `auto`: type inferred from context/initializer
 
     TypeInfo(DataType b = DataType::VOID, bool arr = false, bool map = false,
              DataType key = DataType::VOID,
@@ -57,30 +70,79 @@ struct TypeInfo {
         return t;
     }
 
-    // T[] preserving the element's full type (incl. struct name).
+    // T[] preserving the element's full type — supports nested element
+    // types: arrays, maps, and structs (e.g. int32[][], Point[], map<K,V>[]).
     static TypeInfo arrayOf(const TypeInfo &elem) {
-        TypeInfo t = elem;
-        t.isArray = true;
+        TypeInfo t(elem.baseType, true, false, DataType::VOID, nullptr,
+                   elem.isStruct, elem.structName);
+        t.arrayElem = std::make_shared<TypeInfo>(elem);
         return t;
     }
 
-    // Element type when this describes an array; handles struct elements.
+    // `auto` — resolved from the initializer at declaration time.
+    static TypeInfo autoType() {
+        TypeInfo t;
+        t.isAuto = true;
+        return t;
+    }
+
+    // Function type: fn(paramTypes) -> ret (ret null = inferred).
+    static TypeInfo functionOf(std::vector<TypeInfo> params,
+                               std::shared_ptr<TypeInfo> ret) {
+        TypeInfo t;
+        t.isFunction = true;
+        t.paramTypes = std::move(params);
+        t.retType = std::move(ret);
+        return t;
+    }
+
+    // Opaque function reference (overloaded procedure) — signature checked
+    // per call at runtime.
+    static TypeInfo opaqueFunction() {
+        TypeInfo t;
+        t.isFunction = true;
+        t.fnOpaque = true;
+        return t;
+    }
+
+    // Element type when this describes an array; handles nested and
+    // struct elements.
     TypeInfo elementType() const {
+        if (arrayElem) {
+            return *arrayElem;
+        }
         TypeInfo t = *this;
         t.isArray = false;
+        t.arrayElem = nullptr;
         return t;
     }
 
     bool operator==(const TypeInfo &other) const {
         if (baseType != other.baseType || isArray != other.isArray ||
             isMap != other.isMap || isStruct != other.isStruct ||
-            keyType != other.keyType || structName != other.structName)
+            keyType != other.keyType || structName != other.structName ||
+            isFunction != other.isFunction || isAuto != other.isAuto)
             return false;
+        if (isFunction) {
+            if (fnOpaque != other.fnOpaque || paramTypes != other.paramTypes)
+                return false;
+            if (retType || other.retType) {
+                if (!retType || !other.retType)
+                    return false;
+                return *retType == *other.retType;
+            }
+            return true;
+        }
         if (isMap && (mapValueType || other.mapValueType)) {
             if (!mapValueType || !other.mapValueType)
                 return false;
-            return *mapValueType == *other.mapValueType;
+            if (!(*mapValueType == *other.mapValueType))
+                return false;
         }
+        // Normalized element comparison: handles both the legacy flat form
+        // (arrayElem == null) and the nested form.
+        if (isArray && !(elementType() == other.elementType()))
+            return false;
         return true;
     }
 
@@ -90,9 +152,11 @@ struct TypeInfo {
 struct ArrayValue;
 struct MapValue;
 struct StructValue;
+struct FunctionValue;
 using ArrayPtr = std::shared_ptr<ArrayValue>;
 using MapPtr = std::shared_ptr<MapValue>;
 using StructPtr = std::shared_ptr<StructValue>;
+using FuncPtr = std::shared_ptr<FunctionValue>;
 
 // Variant to hold any script value
 using Value = std::variant<
@@ -111,7 +175,8 @@ using Value = std::variant<
     bool,
     ArrayPtr,
     MapPtr,
-    StructPtr
+    StructPtr,
+    FuncPtr
 >;
 
 struct ArrayValue {
