@@ -23,7 +23,23 @@ TypeInfo ValueHelper::getType(const Value &val) {
     if (!arr) {
       return TypeInfo(DataType::VOID, true);
     }
-    return TypeInfo(arr->elementType, true);
+    TypeInfo t = arr->elementType;
+    t.isArray = true;
+    return t;
+  }
+  if (std::holds_alternative<StructPtr>(val)) {
+    StructPtr sv = std::get<StructPtr>(val);
+    if (!sv) {
+      return TypeInfo(DataType::VOID);
+    }
+    return TypeInfo::structOf(sv->typeName);
+  }
+  if (std::holds_alternative<MapPtr>(val)) {
+    MapPtr m = std::get<MapPtr>(val);
+    if (!m) {
+      return TypeInfo(DataType::VOID, false, true, DataType::VOID);
+    }
+    return TypeInfo::mapOf(m->keyType, m->valueType);
   }
   if (std::holds_alternative<char>(val))
     return TypeInfo(DataType::CHAR);
@@ -55,6 +71,9 @@ TypeInfo ValueHelper::getType(const Value &val) {
 }
 
 std::string ValueHelper::typeToString(const TypeInfo &type) {
+  if (type.isStruct) {
+    return type.structName + (type.isArray ? "[]" : "");
+  }
   std::string base;
   switch (type.baseType) {
   case DataType::INT8:
@@ -99,6 +118,11 @@ std::string ValueHelper::typeToString(const TypeInfo &type) {
   case DataType::VOID:
     base = "void";
     break;
+  }
+  if (type.isMap) {
+    std::string valStr =
+        type.mapValueType ? typeToString(*type.mapValueType) : base;
+    return "map<" + typeToString(TypeInfo(type.keyType)) + ", " + valStr + ">";
   }
   if (type.isArray) {
     base += "[]";
@@ -153,6 +177,10 @@ int64_t ValueHelper::toInt64(const Value &val) {
           return static_cast<int64_t>(arg);
         } else if constexpr (std::is_same_v<T, ArrayPtr>) {
           throw std::runtime_error("Cannot convert array to int64");
+        } else if constexpr (std::is_same_v<T, MapPtr>) {
+          throw std::runtime_error("Cannot convert map to int64");
+        } else if constexpr (std::is_same_v<T, StructPtr>) {
+          throw std::runtime_error("Cannot convert struct to int64");
         } else {
           return static_cast<int64_t>(arg);
         }
@@ -175,6 +203,10 @@ uint64_t ValueHelper::toUInt64(const Value &val) {
           return static_cast<uint64_t>(arg);
         } else if constexpr (std::is_same_v<T, ArrayPtr>) {
           throw std::runtime_error("Cannot convert array to uint64");
+        } else if constexpr (std::is_same_v<T, MapPtr>) {
+          throw std::runtime_error("Cannot convert map to uint64");
+        } else if constexpr (std::is_same_v<T, StructPtr>) {
+          throw std::runtime_error("Cannot convert struct to uint64");
         } else {
           return static_cast<uint64_t>(arg);
         }
@@ -195,6 +227,10 @@ double ValueHelper::toDouble(const Value &val) {
           return arg ? 1.0 : 0.0;
         } else if constexpr (std::is_same_v<T, ArrayPtr>) {
           throw std::runtime_error("Cannot convert array to double");
+        } else if constexpr (std::is_same_v<T, MapPtr>) {
+          throw std::runtime_error("Cannot convert map to double");
+        } else if constexpr (std::is_same_v<T, StructPtr>) {
+          throw std::runtime_error("Cannot convert struct to double");
         } else {
           return static_cast<double>(arg);
         }
@@ -215,6 +251,8 @@ bool ValueHelper::toBool(const Value &val) {
           return arg;
         } else if constexpr (std::is_same_v<T, double>) {
           return arg != 0.0;
+        } else if constexpr (std::is_same_v<T, StructPtr>) {
+          return arg != nullptr;
         } else {
           return arg != 0;
         }
@@ -223,9 +261,6 @@ bool ValueHelper::toBool(const Value &val) {
 }
 
 std::string ValueHelper::toString(const Value &val) {
-  if (std::holds_alternative<ArrayPtr>(val)) {
-    return "[array]";
-  }
   return std::visit(
       [](auto &&arg) -> std::string {
         using T = std::decay_t<decltype(arg)>;
@@ -239,7 +274,47 @@ std::string ValueHelper::toString(const Value &val) {
                              std::is_same_v<T, float>) {
           return std::to_string(arg);
         } else if constexpr (std::is_same_v<T, ArrayPtr>) {
-          return std::string("[array]");
+          std::string out = "[";
+          const auto &elems = arg ? arg->elements
+                                  : std::vector<Value>{};
+          for (size_t i = 0; i < elems.size(); ++i) {
+            if (i > 0)
+              out += ", ";
+            out += toString(elems[i]);
+          }
+          out += "]";
+          return out;
+        } else if constexpr (std::is_same_v<T, MapPtr>) {
+          std::string out = "{";
+          bool first = true;
+          if (arg) {
+            for (const auto &kv : arg->entries) {
+              if (!first)
+                out += ", ";
+              first = false;
+              out += toString(kv.first) + ": " + toString(kv.second);
+            }
+          }
+          out += "}";
+          return out;
+        } else if constexpr (std::is_same_v<T, StructPtr>) {
+          if (!arg) {
+            return "<null struct>";
+          }
+          std::string out = arg->typeName + "{";
+          bool first = true;
+          for (const auto &name : arg->fieldOrder) {
+            auto it = arg->fields.find(name);
+            if (it == arg->fields.end()) {
+              continue;
+            }
+            if (!first)
+              out += ", ";
+            first = false;
+            out += name + ": " + toString(it->second);
+          }
+          out += "}";
+          return out;
         } else {
           return std::to_string(arg);
         }
@@ -504,6 +579,26 @@ bool arraysEqual(const ArrayPtr &lhs, const ArrayPtr &rhs) {
 bool ValueHelper::equals(const Value &a, const Value &b) {
   TypeInfo ta = getType(a);
   TypeInfo tb = getType(b);
+  if (ta.isStruct || tb.isStruct) {
+    if (!ta.isStruct || !tb.isStruct || ta.structName != tb.structName) {
+      return false;
+    }
+    StructPtr sa = std::get<StructPtr>(a);
+    StructPtr sb = std::get<StructPtr>(b);
+    if (!sa || !sb) {
+      return sa == sb;
+    }
+    if (sa->fields.size() != sb->fields.size()) {
+      return false;
+    }
+    for (const auto &kv : sa->fields) {
+      auto it = sb->fields.find(kv.first);
+      if (it == sb->fields.end() || !equals(kv.second, it->second)) {
+        return false;
+      }
+    }
+    return true;
+  }
   if (ta.isArray || tb.isArray) {
     if (!ta.isArray || !tb.isArray) {
       return false;
@@ -753,7 +848,7 @@ ArrayPtr ValueHelper::createArray(const TypeInfo &elementType, const std::vector
     throw std::runtime_error("Nested arrays are not supported");
   }
   auto arr = std::make_shared<ArrayValue>();
-  arr->elementType = elementType.baseType;
+  arr->elementType = elementType;
   arr->elements = elements;
   return arr;
 }
@@ -768,7 +863,7 @@ TypeInfo ValueHelper::arrayElementType(const Value &val) {
   if (!arr) {
     return TypeInfo(DataType::VOID);
   }
-  return TypeInfo(arr->elementType);
+  return arr->elementType;
 }
 
 std::vector<Value> &ValueHelper::arrayElements(Value &val) {
@@ -785,9 +880,70 @@ const std::vector<Value> &ValueHelper::arrayElements(const Value &val) {
   return std::get<ArrayPtr>(val)->elements;
 }
 
+MapPtr ValueHelper::createMap(const TypeInfo &keyType,
+                              const TypeInfo &valueType) {
+  auto m = std::make_shared<MapValue>();
+  m->keyType = keyType;
+  m->valueType = valueType;
+  return m;
+}
+
+bool ValueHelper::isMap(const Value &val) {
+  return std::holds_alternative<MapPtr>(val);
+}
+
+std::map<Value, Value> &ValueHelper::mapEntries(Value &val) {
+  if (!isMap(val)) {
+    throw std::runtime_error("Value is not a map");
+  }
+  return std::get<MapPtr>(val)->entries;
+}
+
+const std::map<Value, Value> &ValueHelper::mapEntries(const Value &val) {
+  if (!isMap(val)) {
+    throw std::runtime_error("Value is not a map");
+  }
+  return std::get<MapPtr>(val)->entries;
+}
+
+TypeInfo ValueHelper::mapKeyType(const Value &val) {
+  if (!isMap(val)) {
+    throw std::runtime_error("Value is not a map");
+  }
+  MapPtr m = std::get<MapPtr>(val);
+  return m ? m->keyType : TypeInfo(DataType::VOID);
+}
+
+TypeInfo ValueHelper::mapValueType(const Value &val) {
+  if (!isMap(val)) {
+    throw std::runtime_error("Value is not a map");
+  }
+  MapPtr m = std::get<MapPtr>(val);
+  return m ? m->valueType : TypeInfo(DataType::VOID);
+}
+
+bool ValueHelper::isStruct(const Value &val) {
+  return std::holds_alternative<StructPtr>(val);
+}
+
+std::string ValueHelper::structTypeName(const Value &val) {
+  if (!isStruct(val)) {
+    throw std::runtime_error("Value is not a struct");
+  }
+  StructPtr sv = std::get<StructPtr>(val);
+  return sv ? sv->typeName : "";
+}
+
 Value ValueHelper::convertElement(const Value &val, const TypeInfo &target) {
   if (target.isArray) {
     throw std::runtime_error("Nested arrays are not supported");
+  }
+  if (target.isStruct) {
+    TypeInfo src = getType(val);
+    if (src.isStruct && src.structName == target.structName) {
+      return val;
+    }
+    throw std::runtime_error("Expected struct '" + target.structName + "'");
   }
   DataType t = target.baseType;
   switch (t) {

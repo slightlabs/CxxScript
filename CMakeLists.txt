@@ -63,6 +63,7 @@ set(LIBRARY_SOURCES
     ${SRC_DIR}/Lexer.cpp
     ${SRC_DIR}/Parser.cpp
     ${SRC_DIR}/Interpreter.cpp
+    ${SRC_DIR}/Builtins.cpp
     ${SRC_DIR}/ScriptManager.cpp
 )
 
@@ -74,11 +75,19 @@ set(LIBRARY_HEADERS
     ${INCLUDE_DIR}/Parser.h
     ${INCLUDE_DIR}/AST.h
     ${INCLUDE_DIR}/Interpreter.h
+    ${INCLUDE_DIR}/Builtins.h
     ${INCLUDE_DIR}/ScriptManager.h
 )
 
 # Create static library
 add_library(CxxScript STATIC ${LIBRARY_SOURCES} ${LIBRARY_HEADERS})
+
+# Command-line runner / REPL
+add_executable(cxxscript ${CMAKE_CURRENT_SOURCE_DIR}/cli/cxxscript.cpp)
+target_link_libraries(cxxscript PRIVATE CxxScript)
+set_target_properties(cxxscript PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
 
 # Include directories for the library
 target_include_directories(CxxScript PUBLIC
@@ -147,6 +156,15 @@ set(CXXSCRIPT_TEST_SOURCES
     test_external_variables
     test_float
     test_char
+    test_builtins
+    test_control_flow2
+    test_literals_trace
+    test_const_import
+    test_map
+    test_warnings
+    test_hot_reload
+    test_debugger
+    test_struct
 )
 
 set(CXXSCRIPT_TEST_TARGETS "")

@@ -2,8 +2,19 @@
 
 #include <string>
 #include <cstdint>
+#include <vector>
 
 namespace Script {
+
+// A piece of an interpolated string literal: either literal text or the
+// source text of an embedded ${...} expression.
+struct StringPart {
+  bool isExpr = false;
+  std::string text;
+
+  StringPart(bool expr = false, const std::string &t = "")
+      : isExpr(expr), text(t) {}
+};
 
 enum class TokenType {
     // Literals
@@ -38,6 +49,9 @@ enum class TokenType {
     DO,
     BREAK,
     CONTINUE,
+    CONST,
+    IMPORT,
+    STRUCT,
     
     // Control Flow
     IF,
@@ -52,11 +66,19 @@ enum class TokenType {
     MULTIPLY,       // *
     DIVIDE,         // /
     MODULO,         // %
+    INC,            // ++
+    DEC,            // --
     ASSIGN,         // =
     PLUS_ASSIGN,    // +=
     MINUS_ASSIGN,   // -=
     MULT_ASSIGN,    // *=
     DIV_ASSIGN,     // /=
+    MOD_ASSIGN,     // %=
+    AND_ASSIGN,     // &=
+    OR_ASSIGN,      // |=
+    XOR_ASSIGN,     // ^=
+    LSHIFT_ASSIGN,  // <<=
+    RSHIFT_ASSIGN,  // >>=
     
     // Comparison
     EQUAL,          // ==
@@ -88,6 +110,7 @@ enum class TokenType {
     COMMA,          // ,
     COLON,          // :
     QUESTION,       // ?
+    DOT,            // .
     
     // Special
     END_OF_FILE,
@@ -105,6 +128,11 @@ struct Token {
     std::string stringValue;
     double doubleValue = 0.0;
     char charValue = '\0';
+
+    // For interpolated string literals ("a${x}b"): literal and expression
+    // parts in order of appearance.
+    bool interpolated = false;
+    std::vector<StringPart> stringParts;
     
     Token(TokenType t = TokenType::UNKNOWN, const std::string& lex = "", int ln = 0, int col = 0)
         : type(t), lexeme(lex), line(ln), column(col) {}

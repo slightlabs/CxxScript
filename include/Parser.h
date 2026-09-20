@@ -5,6 +5,7 @@
 #include "Token.h"
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace Script {
@@ -23,9 +24,18 @@ public:
 
 class Parser {
 public:
-  Parser(const std::vector<Token> &tokens, const std::string &filename = "");
+  // knownStructs: names of struct types declared by previously loaded files
+  // (imports, earlier loadScriptSource calls, REPL state).
+  Parser(const std::vector<Token> &tokens, const std::string &filename = "",
+         const std::unordered_set<std::string> &knownStructs = {});
 
   ScriptPtr parse();
+
+  // Parse a single expression (used for string interpolation sub-parsing).
+  ExprPtr parseExpression();
+
+  // Parse a sequence of top-level statements (REPL / snippet evaluation).
+  std::vector<StmtPtr> parseStatements();
 
 private:
   std::vector<Token> _tokens;
@@ -33,10 +43,12 @@ private:
   size_t _current;
   std::string _currentProcedure;
   std::vector<ParseError> _errors;
+  std::unordered_set<std::string> _structNames; // known + in-file struct types
 
   // Utility methods
   bool isAtEnd() const;
   Token peek() const;
+  Token peekAt(size_t offset) const;
   Token previous() const;
   Token advance();
   bool check(TokenType type) const;
@@ -48,8 +60,15 @@ private:
 
   // Parsing methods
   ProcedureDeclPtr procedureDeclaration();
+  StructDeclPtr structDeclaration();
   std::vector<Parameter> parameters();
   TypeInfo parseType();
+  Token consumeGreaterThan();
+  // Index just past a `map<K, V>` type starting at offset, or -1.
+  int mapTypeEnd(size_t offset) const;
+  // Whether tokens at offset start a variable declaration (scalar, array,
+  // const-qualified, or map<K,V> type followed by a variable name).
+  bool isDeclStart(size_t offset) const;
 
   StmtPtr statement();
   StmtPtr varDeclaration();
@@ -79,6 +98,7 @@ private:
   ExprPtr factor();
   ExprPtr unary();
   ExprPtr primary();
+  ExprPtr interpolatedString(const Token &token);
   ExprPtr call();
   ExprPtr finishCall(ExprPtr callee);
   ExprPtr finishIndex(ExprPtr callee);

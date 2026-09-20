@@ -1,4 +1,5 @@
 #include "Lexer.h"
+#include <cctype>
 
 namespace Script {
 
@@ -32,6 +33,9 @@ void Lexer::initKeywords() {
   _keywords["do"] = TokenType::DO;
   _keywords["break"] = TokenType::BREAK;
   _keywords["continue"] = TokenType::CONTINUE;
+  _keywords["const"] = TokenType::CONST;
+  _keywords["import"] = TokenType::IMPORT;
+  _keywords["struct"] = TokenType::STRUCT;
   _keywords["if"] = TokenType::IF;
   _keywords["else"] = TokenType::ELSE;
   _keywords["while"] = TokenType::WHILE;
@@ -91,10 +95,14 @@ Token Lexer::nextToken() {
   // Two-character operators
   switch (c) {
   case '+':
+    if (match('+'))
+      return makeToken(TokenType::INC, "++");
     if (match('='))
       return makeToken(TokenType::PLUS_ASSIGN, "+=");
     return makeToken(TokenType::PLUS, "+");
   case '-':
+    if (match('-'))
+      return makeToken(TokenType::DEC, "--");
     if (match('='))
       return makeToken(TokenType::MINUS_ASSIGN, "-=");
     return makeToken(TokenType::MINUS, "-");
@@ -107,6 +115,8 @@ Token Lexer::nextToken() {
       return makeToken(TokenType::DIV_ASSIGN, "/=");
     return makeToken(TokenType::DIVIDE, "/");
   case '%':
+    if (match('='))
+      return makeToken(TokenType::MOD_ASSIGN, "%=");
     return makeToken(TokenType::MODULO, "%");
   case '=':
     if (match('='))
@@ -117,30 +127,42 @@ Token Lexer::nextToken() {
       return makeToken(TokenType::NOT_EQUAL, "!=");
     return makeToken(TokenType::NOT, "!");
   case '<':
+    if (match('<')) {
+      if (match('='))
+        return makeToken(TokenType::LSHIFT_ASSIGN, "<<=");
+      return makeToken(TokenType::LSHIFT, "<<");
+    }
     if (match('='))
       return makeToken(TokenType::LESS_EQUAL, "<=");
-    if (match('<'))
-      return makeToken(TokenType::LSHIFT, "<<");
     return makeToken(TokenType::LESS_THAN, "<");
   case '>':
+    if (match('>')) {
+      if (match('='))
+        return makeToken(TokenType::RSHIFT_ASSIGN, ">>=");
+      return makeToken(TokenType::RSHIFT, ">>");
+    }
     if (match('='))
       return makeToken(TokenType::GREATER_EQUAL, ">=");
-    if (match('>'))
-      return makeToken(TokenType::RSHIFT, ">>");
     return makeToken(TokenType::GREATER_THAN, ">");
   case '&':
     if (match('&'))
       return makeToken(TokenType::AND, "&&");
+    if (match('='))
+      return makeToken(TokenType::AND_ASSIGN, "&=");
     return makeToken(TokenType::BIT_AND, "&");
   case '|':
     if (match('|'))
       return makeToken(TokenType::OR, "||");
+    if (match('='))
+      return makeToken(TokenType::OR_ASSIGN, "|=");
     return makeToken(TokenType::BIT_OR, "|");
   case '(':
     return makeToken(TokenType::LPAREN, "(");
   case '[':
     return makeToken(TokenType::LBRACKET, "[");
   case '^':
+    if (match('='))
+      return makeToken(TokenType::XOR_ASSIGN, "^=");
     return makeToken(TokenType::BIT_XOR, "^");
   case '~':
     return makeToken(TokenType::BIT_NOT, "~");
@@ -160,6 +182,8 @@ Token Lexer::nextToken() {
     return makeToken(TokenType::COLON, ":");
   case '?':
     return makeToken(TokenType::QUESTION, "?");
+  case '.':
+    return makeToken(TokenType::DOT, ".");
   }
 
   Token errorToken = makeToken(TokenType::UNKNOWN, std::string(1, c));
@@ -259,33 +283,129 @@ Token Lexer::number() {
   int startColumn = _column;
   size_t start = _current;
 
-  bool seenDot = false;
-  while (true) {
-    if (isDigit(peek())) {
-      advance();
-      continue;
+  // Base-prefixed integer literals: 0x hex, 0b binary, 0o octal
+  if (peek() == '0' && (peekNext() == 'x' || peekNext() == 'X' ||
+                        peekNext() == 'b' || peekNext() == 'B' ||
+                        peekNext() == 'o' || peekNext() == 'O')) {
+    char kind = static_cast<char>(std::tolower(peekNext()));
+    int base = kind == 'x' ? 16 : (kind == 'b' ? 2 : 8);
+    advance(); // '0'
+    advance(); // prefix letter
+
+    auto isBaseDigit = [&](char c) -> bool {
+      if (base == 16)
+        return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+      if (base == 8)
+        return c >= '0' && c <= '7';
+      return c == '0' || c == '1';
+    };
+
+    std::string digits;
+    bool lastSep = false;
+    while (!isAtEnd()) {
+      char c = peek();
+      if (isBaseDigit(c)) {
+        digits += c;
+        lastSep = false;
+        advance();
+      } else if (c == '_' && !digits.empty() && !lastSep) {
+        lastSep = true;
+        advance();
+      } else {
+        break;
+      }
     }
 
-    if (!seenDot && peek() == '.' && isDigit(peekNext())) {
-      seenDot = true;
-      advance();
-      continue;
+    // Reject empty digits, trailing separator, or a stray alphanumeric
+    // (e.g. 0x, 0b2, 0xFFz) as a bad literal.
+    if (digits.empty() || lastSep || isAlphaNumeric(peek())) {
+      std::string bad = _source.substr(start, _current - start);
+      if (isAlphaNumeric(peek()))
+        bad += advance();
+      Token token = makeToken(TokenType::UNKNOWN, bad);
+      token.column = startColumn;
+      return token;
     }
 
-    break;
+    Token token = makeToken(TokenType::INT_LITERAL, _source.substr(start, _current - start));
+    token.column = startColumn;
+    try {
+      token.intValue = static_cast<int64_t>(std::stoull(digits, nullptr, base));
+    } catch (const std::exception &) {
+      token.type = TokenType::UNKNOWN;
+    }
+    return token;
   }
 
-  std::string numStr = _source.substr(start, _current - start);
-  bool isFloat = seenDot;
+  // Decimal (with optional fraction, exponent, and _ digit separators)
+  std::string numStr;
+  bool isFloat = false;
+
+  auto digits = [&](bool &sepErr) {
+    while (isDigit(peek()) || peek() == '_') {
+      char c = peek();
+      if (c == '_') {
+        // A separator is only valid between two digits.
+        if (numStr.empty() || !isDigit(numStr.back()) || !isDigit(peekNext()))
+          sepErr = true;
+        advance();
+      } else {
+        numStr += advance();
+      }
+    }
+  };
+
+  bool sepErr = false;
+  digits(sepErr);
+  if (numStr.empty())
+    sepErr = true;
+
+  if (peek() == '.' && isDigit(peekNext())) {
+    isFloat = true;
+    numStr += advance(); // '.'
+    digits(sepErr);
+  }
+
+  // Exponent: [eE][+-]?digits
+  if (peek() == 'e' || peek() == 'E') {
+    size_t saveCur = _current;
+    int saveCol = _column;
+    advance(); // 'e'
+    if (peek() == '+' || peek() == '-')
+      advance();
+    if (isDigit(peek())) {
+      isFloat = true;
+      numStr += 'e';
+      if (_source[saveCur + 1] == '+' || _source[saveCur + 1] == '-')
+        numStr += _source[saveCur + 1];
+      digits(sepErr);
+    } else {
+      _current = saveCur;
+      _column = saveCol;
+    }
+  }
+
+  if (sepErr || isAlpha(peek())) {
+    std::string bad = _source.substr(start, _current - start);
+    if (isAlphaNumeric(peek()))
+      bad += advance();
+    Token token = makeToken(TokenType::UNKNOWN, bad);
+    token.column = startColumn;
+    return token;
+  }
 
   Token token = makeToken(isFloat ? TokenType::FLOAT_LITERAL
                                   : TokenType::INT_LITERAL,
                           numStr);
   token.column = startColumn;
-  if (isFloat) {
-    token.doubleValue = std::stod(numStr);
-  } else {
-    token.intValue = std::stoll(numStr);
+  try {
+    if (isFloat) {
+      token.doubleValue = std::stod(numStr);
+    } else {
+      token.intValue = std::stoll(numStr);
+    }
+  } catch (const std::exception &) {
+    token.type = TokenType::UNKNOWN;
   }
   return token;
 }
@@ -311,11 +431,97 @@ Token Lexer::identifier() {
 Token Lexer::string() {
   int startColumn = _column - 1;
   std::string value;
+  std::vector<StringPart> parts;
+  bool interpolated = false;
+
+  auto flushLiteral = [&]() {
+    parts.push_back(StringPart(false, value));
+    value.clear();
+  };
 
   while (peek() != '"' && !isAtEnd()) {
     if (peek() == '\n') {
       _line++;
       _column = 0;
+    }
+
+    // String interpolation: ${expr}
+    if (peek() == '$' && peekNext() == '{') {
+      advance(); // $
+      advance(); // {
+      flushLiteral();
+
+      std::string expr;
+      int depth = 1;
+      bool inStr = false, inChar = false, esc = false, closed = false;
+
+      while (!isAtEnd() && !closed) {
+        char ch = peek();
+        if (ch == '\n') {
+          _line++;
+          _column = 0;
+        }
+        if (esc) {
+          expr += ch;
+          esc = false;
+          advance();
+          continue;
+        }
+        if ((inStr || inChar) && ch == '\\') {
+          expr += ch;
+          esc = true;
+          advance();
+          continue;
+        }
+        if (inStr) {
+          expr += ch;
+          if (ch == '"')
+            inStr = false;
+          advance();
+          continue;
+        }
+        if (inChar) {
+          expr += ch;
+          if (ch == '\'')
+            inChar = false;
+          advance();
+          continue;
+        }
+        switch (ch) {
+        case '"':
+          inStr = true;
+          break;
+        case '\'':
+          inChar = true;
+          break;
+        case '{':
+          depth++;
+          break;
+        case '}':
+          depth--;
+          if (depth == 0) {
+            advance();
+            closed = true;
+          }
+          break;
+        default:
+          break;
+        }
+        if (!closed) {
+          expr += ch;
+          advance();
+        }
+      }
+
+      if (!closed) {
+        Token token = makeToken(TokenType::UNKNOWN, "\"${" + expr);
+        token.column = startColumn;
+        return token;
+      }
+
+      parts.push_back(StringPart(true, expr));
+      interpolated = true;
+      continue;
     }
 
     // Handle escape sequences
@@ -342,6 +548,9 @@ Token Lexer::string() {
       case '0':
         value += '\0';
         break; // Null character
+      case '$':
+        value += '$';
+        break; // Escaped $ (literal, no interpolation)
       default:
         // Unknown escape sequence - keep the backslash
         value += '\\';
@@ -364,7 +573,13 @@ Token Lexer::string() {
 
   Token token = makeToken(TokenType::STRING_LITERAL, "\"" + value + "\"");
   token.column = startColumn;
-  token.stringValue = value;
+  if (interpolated) {
+    flushLiteral();
+    token.interpolated = true;
+    token.stringParts = parts;
+  } else {
+    token.stringValue = value;
+  }
   return token;
 }
 

@@ -3,15 +3,98 @@
 
 namespace Script {
 
-Parser::Parser(const std::vector<Token> &tokens, const std::string &filename)
-    : _tokens(tokens), _filename(filename), _current(0), _currentProcedure("") {
+namespace {
+
+bool isTypeToken(TokenType t) {
+  switch (t) {
+  case TokenType::INT8:
+  case TokenType::UINT8:
+  case TokenType::INT16:
+  case TokenType::UINT16:
+  case TokenType::INT32:
+  case TokenType::UINT32:
+  case TokenType::INT64:
+  case TokenType::UINT64:
+  case TokenType::FLOAT:
+  case TokenType::DOUBLE:
+  case TokenType::STRING:
+  case TokenType::BOOL:
+  case TokenType::CHAR:
+    return true;
+  default:
+    return false;
+  }
+}
+
+AssignStmt::Operator assignOpFor(TokenType t) {
+  switch (t) {
+  case TokenType::PLUS_ASSIGN:
+    return AssignStmt::Operator::PLUS_ASSIGN;
+  case TokenType::MINUS_ASSIGN:
+    return AssignStmt::Operator::MINUS_ASSIGN;
+  case TokenType::MULT_ASSIGN:
+    return AssignStmt::Operator::MULT_ASSIGN;
+  case TokenType::DIV_ASSIGN:
+    return AssignStmt::Operator::DIV_ASSIGN;
+  case TokenType::MOD_ASSIGN:
+    return AssignStmt::Operator::MOD_ASSIGN;
+  case TokenType::AND_ASSIGN:
+    return AssignStmt::Operator::BAND_ASSIGN;
+  case TokenType::OR_ASSIGN:
+    return AssignStmt::Operator::BOR_ASSIGN;
+  case TokenType::XOR_ASSIGN:
+    return AssignStmt::Operator::BXOR_ASSIGN;
+  case TokenType::LSHIFT_ASSIGN:
+    return AssignStmt::Operator::SHL_ASSIGN;
+  case TokenType::RSHIFT_ASSIGN:
+    return AssignStmt::Operator::SHR_ASSIGN;
+  default:
+    return AssignStmt::Operator::ASSIGN;
+  }
+}
+
+bool isAssignTarget(const ExprPtr &expr) {
+  return std::dynamic_pointer_cast<VariableExpr>(expr) != nullptr ||
+         std::dynamic_pointer_cast<IndexExpr>(expr) != nullptr ||
+         std::dynamic_pointer_cast<MemberExpr>(expr) != nullptr;
+}
+
+} // namespace
+
+Parser::Parser(const std::vector<Token> &tokens, const std::string &filename,
+               const std::unordered_set<std::string> &knownStructs)
+    : _tokens(tokens), _filename(filename), _current(0), _currentProcedure(""),
+      _structNames(knownStructs) {
 }
 
 ScriptPtr Parser::parse() {
   auto script = std::make_shared<Script>(_filename);
 
+  // Pre-scan for `struct Name` so type positions can reference a struct
+  // declared later in the same file.
+  for (size_t i = 0; i + 1 < _tokens.size(); ++i) {
+    if (_tokens[i].type == TokenType::STRUCT &&
+        _tokens[i + 1].type == TokenType::IDENTIFIER) {
+      _structNames.insert(_tokens[i + 1].lexeme);
+    }
+  }
+
   while (!isAtEnd()) {
     try {
+      if (match({TokenType::IMPORT})) {
+        Token path = consume(TokenType::STRING_LITERAL,
+                             "Expected string path after 'import'");
+        consume(TokenType::SEMICOLON, "Expected ';' after import");
+        script->imports.emplace_back(path.stringValue, path.line);
+        continue;
+      }
+      if (check(TokenType::STRUCT)) {
+        auto decl = structDeclaration();
+        if (decl) {
+          script->structs.push_back(decl);
+        }
+        continue;
+      }
       auto proc = procedureDeclaration();
       if (proc) {
         script->procedures.push_back(proc);
@@ -26,9 +109,33 @@ ScriptPtr Parser::parse() {
   return script;
 }
 
+ExprPtr Parser::parseExpression() {
+  ExprPtr expr = expression();
+  if (peek().type != TokenType::END_OF_FILE) {
+    throw error("Expected end of expression");
+  }
+  return expr;
+}
+
+std::vector<StmtPtr> Parser::parseStatements() {
+  std::vector<StmtPtr> stmts;
+  while (!isAtEnd()) {
+    stmts.push_back(statement());
+  }
+  return stmts;
+}
+
 bool Parser::isAtEnd() const { return peek().type == TokenType::END_OF_FILE; }
 
 Token Parser::peek() const { return _tokens[_current]; }
+
+Token Parser::peekAt(size_t offset) const {
+  size_t idx = _current + offset;
+  if (idx >= _tokens.size()) {
+    return _tokens.back(); // END_OF_FILE token
+  }
+  return _tokens[idx];
+}
 
 Token Parser::previous() const { return _tokens[_current - 1]; }
 
@@ -100,6 +207,7 @@ void Parser::synchronize() {
     case TokenType::BOOL:
     case TokenType::CHAR:
     case TokenType::VOID:
+    case TokenType::STRUCT:
       return;
     default:
       break;
@@ -145,7 +253,59 @@ std::vector<Parameter> Parser::parameters() {
   return params;
 }
 
+StructDeclPtr Parser::structDeclaration() {
+  Token kw = consume(TokenType::STRUCT, "Expected 'struct'");
+  Token name =
+      consume(TokenType::IDENTIFIER, "Expected struct name after 'struct'");
+  consume(TokenType::LBRACE, "Expected '{' after struct name");
+
+  std::vector<Parameter> fields;
+  while (!check(TokenType::RBRACE) && !isAtEnd()) {
+    TypeInfo fieldType = parseType();
+    Token fieldName =
+        consume(TokenType::IDENTIFIER, "Expected field name in struct");
+    consume(TokenType::SEMICOLON, "Expected ';' after struct field");
+    fields.push_back({fieldType, fieldName.lexeme});
+  }
+  consume(TokenType::RBRACE, "Expected '}' after struct body");
+  match({TokenType::SEMICOLON}); // optional trailing semicolon
+
+  return std::make_shared<StructDecl>(name.lexeme, fields, kw.line, kw.column);
+}
+
 TypeInfo Parser::parseType() {
+  // map<K, V> — 'map' is a contextual identifier, not a keyword
+  if (check(TokenType::IDENTIFIER) && peek().lexeme == "map" &&
+      peekAt(1).type == TokenType::LESS_THAN) {
+    advance(); // 'map'
+    advance(); // '<'
+    TypeInfo keyType = parseType();
+    if (keyType.isArray || keyType.isMap ||
+        keyType.baseType == DataType::VOID) {
+      throw error("Map key type must be a scalar type");
+    }
+    consume(TokenType::COMMA, "Expected ',' in map<K, V>");
+    TypeInfo valueType = parseType();
+    if (valueType.baseType == DataType::VOID && !valueType.isStruct) {
+      throw error("Map value type cannot be void");
+    }
+    consumeGreaterThan();
+    return TypeInfo::mapOf(keyType, valueType);
+  }
+
+  // User-declared struct type, e.g. `Point` or `Point[]`
+  if (check(TokenType::IDENTIFIER) &&
+      _structNames.count(peek().lexeme) > 0) {
+    std::string name = peek().lexeme;
+    advance();
+    TypeInfo t = TypeInfo::structOf(name);
+    if (match({TokenType::LBRACKET})) {
+      consume(TokenType::RBRACKET, "Expected ']' after '[' in type");
+      t.isArray = true;
+    }
+    return t;
+  }
+
   DataType base = DataType::VOID;
   if (match({TokenType::INT8}))
     base = DataType::INT8;
@@ -185,8 +345,76 @@ TypeInfo Parser::parseType() {
   }
 
   return TypeInfo(base, isArray);
+}
 
-  throw error("Expected type name");
+Token Parser::consumeGreaterThan() {
+  if (check(TokenType::GREATER_THAN))
+    return advance();
+  // '>>' splits into two '>' for nested generics like map<K, map<K,V>>
+  if (check(TokenType::RSHIFT)) {
+    _tokens[_current].type = TokenType::GREATER_THAN;
+    _tokens[_current].lexeme = ">";
+    return _tokens[_current]; // don't advance — the second '>' is next
+  }
+  throw error("Expected '>' after type arguments");
+}
+
+int Parser::mapTypeEnd(size_t offset) const {
+  size_t base = _current + offset;
+  if (base + 1 >= _tokens.size() ||
+      _tokens[base].type != TokenType::IDENTIFIER ||
+      _tokens[base].lexeme != "map" ||
+      _tokens[base + 1].type != TokenType::LESS_THAN)
+    return -1;
+  int depth = 0;
+  for (size_t i = base + 1; i < _tokens.size(); ++i) {
+    switch (_tokens[i].type) {
+    case TokenType::LESS_THAN:
+      depth++;
+      break;
+    case TokenType::GREATER_THAN:
+      depth--;
+      break;
+    case TokenType::RSHIFT:
+      depth -= 2;
+      break;
+    case TokenType::RSHIFT_ASSIGN:
+      depth -= 3;
+      break;
+    default:
+      break;
+    }
+    if (depth <= 0)
+      return static_cast<int>(i - _current + 1);
+  }
+  return -1;
+}
+
+bool Parser::isDeclStart(size_t offset) const {
+  if (_current + offset >= _tokens.size())
+    return false;
+  TokenType t = _tokens[_current + offset].type;
+  if (t == TokenType::CONST)
+    return isDeclStart(offset + 1);
+  if (isTypeToken(t))
+    return true;
+  // `Point p` / `Point[] p` — identifier that names a known struct
+  // followed by a variable name.
+  if (t == TokenType::IDENTIFIER &&
+      _structNames.count(_tokens[_current + offset].lexeme) > 0) {
+    size_t n = _current + offset + 1;
+    if (n < _tokens.size() &&
+        _tokens[n].type == TokenType::IDENTIFIER)
+      return true;
+    if (n + 2 < _tokens.size() &&
+        _tokens[n].type == TokenType::LBRACKET &&
+        _tokens[n + 1].type == TokenType::RBRACKET &&
+        _tokens[n + 2].type == TokenType::IDENTIFIER)
+      return true;
+  }
+  int end = mapTypeEnd(offset);
+  return end > 0 && _current + end < _tokens.size() &&
+         _tokens[_current + end].type == TokenType::IDENTIFIER;
 }
 
 StmtPtr Parser::statement() {
@@ -209,14 +437,8 @@ StmtPtr Parser::statement() {
   if (match({TokenType::LBRACE}))
     return block();
 
-  // Check for variable declaration
-  if (check(TokenType::INT8) || check(TokenType::UINT8) ||
-      check(TokenType::INT16) || check(TokenType::UINT16) ||
-      check(TokenType::INT32) || check(TokenType::UINT32) ||
-      check(TokenType::INT64) || check(TokenType::UINT64) ||
-      check(TokenType::FLOAT) || check(TokenType::DOUBLE) ||
-      check(TokenType::STRING) || check(TokenType::BOOL) ||
-      check(TokenType::CHAR)) {
+  // Check for variable declaration (optionally const-qualified)
+  if (isDeclStart(0)) {
     return varDeclaration();
   }
 
@@ -227,6 +449,7 @@ StmtPtr Parser::varDeclaration() {
   int line = peek().line;
   int column = peek().column;
 
+  bool isConst = match({TokenType::CONST});
   TypeInfo type = parseType();
   Token name = consume(TokenType::IDENTIFIER, "Expected variable name");
 
@@ -234,10 +457,13 @@ StmtPtr Parser::varDeclaration() {
   if (match({TokenType::ASSIGN})) {
     initializer = expression();
   }
+  if (isConst && !initializer) {
+    throw error("Const variable '" + name.lexeme + "' requires an initializer");
+  }
 
   consume(TokenType::SEMICOLON, "Expected ';' after variable declaration");
   return std::make_shared<VarDeclStmt>(type, name.lexeme, initializer, line,
-                                       column);
+                                       column, isConst);
 }
 
 StmtPtr Parser::expressionStatement() {
@@ -247,65 +473,33 @@ StmtPtr Parser::expressionStatement() {
   ExprPtr expr = expression();
 
   // Check for assignment operators
-  if (match({TokenType::ASSIGN})) {
+  if (match({TokenType::ASSIGN, TokenType::PLUS_ASSIGN, TokenType::MINUS_ASSIGN,
+             TokenType::MULT_ASSIGN, TokenType::DIV_ASSIGN,
+             TokenType::MOD_ASSIGN, TokenType::AND_ASSIGN, TokenType::OR_ASSIGN,
+             TokenType::XOR_ASSIGN, TokenType::LSHIFT_ASSIGN,
+             TokenType::RSHIFT_ASSIGN})) {
+    TokenType opType = previous().type;
     auto varExpr = std::dynamic_pointer_cast<VariableExpr>(expr);
     auto indexExpr = std::dynamic_pointer_cast<IndexExpr>(expr);
-    if (!varExpr && !indexExpr) {
+    auto memberExpr = std::dynamic_pointer_cast<MemberExpr>(expr);
+    if (!varExpr && !indexExpr && !memberExpr) {
       throw error("Invalid assignment target");
     }
     ExprPtr value = expression();
     consume(TokenType::SEMICOLON, "Expected ';' after expression");
+    AssignStmt::Operator op = assignOpFor(opType);
     if (varExpr) {
-      return std::make_shared<AssignStmt>(
-          varExpr->name, value, AssignStmt::Operator::ASSIGN, line, column);
+      return std::make_shared<AssignStmt>(varExpr->name, value, op, line,
+                                          column);
+    }
+    if (memberExpr) {
+      return std::make_shared<MemberAssignStmt>(memberExpr->object,
+                                                memberExpr->member, value, op,
+                                                line, column);
     }
     return std::make_shared<IndexAssignStmt>(indexExpr->arrayExpr,
-                                             indexExpr->indexExpr, value,
+                                             indexExpr->indexExpr, value, op,
                                              line, column);
-  }
-
-  if (match({TokenType::PLUS_ASSIGN})) {
-    auto varExpr = std::dynamic_pointer_cast<VariableExpr>(expr);
-    if (!varExpr) {
-      throw error("Invalid assignment target");
-    }
-    ExprPtr value = expression();
-    consume(TokenType::SEMICOLON, "Expected ';' after expression");
-    return std::make_shared<AssignStmt>(
-        varExpr->name, value, AssignStmt::Operator::PLUS_ASSIGN, line, column);
-  }
-
-  if (match({TokenType::MINUS_ASSIGN})) {
-    auto varExpr = std::dynamic_pointer_cast<VariableExpr>(expr);
-    if (!varExpr) {
-      throw error("Invalid assignment target");
-    }
-    ExprPtr value = expression();
-    consume(TokenType::SEMICOLON, "Expected ';' after expression");
-    return std::make_shared<AssignStmt>(
-        varExpr->name, value, AssignStmt::Operator::MINUS_ASSIGN, line, column);
-  }
-
-  if (match({TokenType::MULT_ASSIGN})) {
-    auto varExpr = std::dynamic_pointer_cast<VariableExpr>(expr);
-    if (!varExpr) {
-      throw error("Invalid assignment target");
-    }
-    ExprPtr value = expression();
-    consume(TokenType::SEMICOLON, "Expected ';' after expression");
-    return std::make_shared<AssignStmt>(
-        varExpr->name, value, AssignStmt::Operator::MULT_ASSIGN, line, column);
-  }
-
-  if (match({TokenType::DIV_ASSIGN})) {
-    auto varExpr = std::dynamic_pointer_cast<VariableExpr>(expr);
-    if (!varExpr) {
-      throw error("Invalid assignment target");
-    }
-    ExprPtr value = expression();
-    consume(TokenType::SEMICOLON, "Expected ';' after expression");
-    return std::make_shared<AssignStmt>(
-        varExpr->name, value, AssignStmt::Operator::DIV_ASSIGN, line, column);
   }
 
   consume(TokenType::SEMICOLON, "Expected ';' after expression");
@@ -365,17 +559,45 @@ StmtPtr Parser::forStatement() {
 
   consume(TokenType::LPAREN, "Expected '(' after 'for'");
 
+  // For-each: for ([const] type name : iterable) body
+  bool elemConst = false;
+  size_t typeOff = 0;
+  if (check(TokenType::CONST) && isDeclStart(1)) {
+    elemConst = true;
+    typeOff = 1;
+  }
+  int mapEnd = mapTypeEnd(typeOff);
+  bool scalarOrStructType = isTypeToken(peekAt(typeOff).type) ||
+                            (peekAt(typeOff).type == TokenType::IDENTIFIER &&
+                             _structNames.count(peekAt(typeOff).lexeme) > 0);
+  bool foreachType = scalarOrStructType &&
+                     peekAt(typeOff + 1).type == TokenType::IDENTIFIER &&
+                     peekAt(typeOff + 2).type == TokenType::COLON;
+  if (mapEnd > 0) {
+    size_t e = _current + static_cast<size_t>(mapEnd);
+    foreachType = e + 1 < _tokens.size() &&
+                  _tokens[e].type == TokenType::IDENTIFIER &&
+                  _tokens[e + 1].type == TokenType::COLON;
+  }
+  if (foreachType) {
+    if (elemConst)
+      advance(); // 'const'
+    TypeInfo elemType = parseType();
+    Token name =
+        consume(TokenType::IDENTIFIER, "Expected for-each variable name");
+    consume(TokenType::COLON, "Expected ':' in for-each loop");
+    ExprPtr iterable = expression();
+    consume(TokenType::RPAREN, "Expected ')' after for-each clauses");
+    StmtPtr body = statement();
+    return std::make_shared<ForEachStmt>(elemType, name.lexeme, iterable, body,
+                                         line, column, elemConst);
+  }
+
   // Initializer
   StmtPtr initializer = nullptr;
   if (match({TokenType::SEMICOLON})) {
     initializer = nullptr;
-  } else if (check(TokenType::INT8) || check(TokenType::UINT8) ||
-             check(TokenType::INT16) || check(TokenType::UINT16) ||
-             check(TokenType::INT32) || check(TokenType::UINT32) ||
-             check(TokenType::INT64) || check(TokenType::UINT64) ||
-             check(TokenType::FLOAT) || check(TokenType::DOUBLE) ||
-             check(TokenType::STRING) || check(TokenType::BOOL) ||
-             check(TokenType::CHAR)) {
+  } else if (isDeclStart(0)) {
     initializer = varDeclaration();
   } else {
     initializer = expressionStatement();
@@ -396,7 +618,10 @@ StmtPtr Parser::forStatement() {
     // Check if it's an assignment
     if (match({TokenType::ASSIGN, TokenType::PLUS_ASSIGN,
                TokenType::MINUS_ASSIGN, TokenType::MULT_ASSIGN,
-               TokenType::DIV_ASSIGN})) {
+               TokenType::DIV_ASSIGN, TokenType::MOD_ASSIGN,
+               TokenType::AND_ASSIGN, TokenType::OR_ASSIGN,
+               TokenType::XOR_ASSIGN, TokenType::LSHIFT_ASSIGN,
+               TokenType::RSHIFT_ASSIGN})) {
       TokenType opType = previous().type;
       auto varExpr = std::dynamic_pointer_cast<VariableExpr>(incrementExpr);
       if (!varExpr) {
@@ -404,28 +629,9 @@ StmtPtr Parser::forStatement() {
       }
       ExprPtr value = expression();
 
-      AssignStmt::Operator op;
-      switch (opType) {
-      case TokenType::ASSIGN:
-        op = AssignStmt::Operator::ASSIGN;
-        break;
-      case TokenType::PLUS_ASSIGN:
-        op = AssignStmt::Operator::PLUS_ASSIGN;
-        break;
-      case TokenType::MINUS_ASSIGN:
-        op = AssignStmt::Operator::MINUS_ASSIGN;
-        break;
-      case TokenType::MULT_ASSIGN:
-        op = AssignStmt::Operator::MULT_ASSIGN;
-        break;
-      case TokenType::DIV_ASSIGN:
-        op = AssignStmt::Operator::DIV_ASSIGN;
-        break;
-      default:
-        op = AssignStmt::Operator::ASSIGN;
-      }
-      increment =
-          std::make_shared<AssignStmt>(varExpr->name, value, op, line, column);
+      increment = std::make_shared<AssignStmt>(varExpr->name, value,
+                                               assignOpFor(opType), line,
+                                               column);
     } else {
       increment = std::make_shared<ExpressionStmt>(incrementExpr, line, column);
     }
@@ -740,6 +946,16 @@ ExprPtr Parser::factor() {
 }
 
 ExprPtr Parser::unary() {
+  if (match({TokenType::INC, TokenType::DEC})) {
+    Token op = previous();
+    ExprPtr target = unary();
+    if (!isAssignTarget(target)) {
+      throw error("++/-- require a variable or index target");
+    }
+    return std::make_shared<UpdateExpr>(target, op.type == TokenType::INC,
+                                        /*prefix=*/true, op.line, op.column);
+  }
+
   if (match({TokenType::MINUS, TokenType::NOT, TokenType::BIT_NOT})) {
     Token op = previous();
     int line = op.line;
@@ -773,6 +989,20 @@ ExprPtr Parser::call() {
       expr = finishCall(expr);
     } else if (match({TokenType::LBRACKET})) {
       expr = finishIndex(expr);
+    } else if (match({TokenType::DOT})) {
+      Token dot = previous();
+      Token member =
+          consume(TokenType::IDENTIFIER, "Expected member name after '.'");
+      expr = std::make_shared<MemberExpr>(expr, member.lexeme, dot.line,
+                                          dot.column);
+    } else if (match({TokenType::INC, TokenType::DEC})) {
+      Token op = previous();
+      if (!isAssignTarget(expr)) {
+        throw error("++/-- require a variable or index target");
+      }
+      expr = std::make_shared<UpdateExpr>(expr, op.type == TokenType::INC,
+                                          /*prefix=*/false, op.line,
+                                          op.column);
     } else {
       break;
     }
@@ -834,6 +1064,22 @@ ExprPtr Parser::primary() {
     return std::make_shared<ArrayLiteralExpr>(elements, line, column);
   }
 
+  if (match({TokenType::LBRACE})) {
+    int line = previous().line;
+    int column = previous().column;
+    std::vector<std::pair<ExprPtr, ExprPtr>> entries;
+    if (!check(TokenType::RBRACE)) {
+      do {
+        ExprPtr key = expression();
+        consume(TokenType::COLON, "Expected ':' in map literal");
+        ExprPtr value = expression();
+        entries.emplace_back(key, value);
+      } while (match({TokenType::COMMA}));
+    }
+    consume(TokenType::RBRACE, "Expected '}' after map literal");
+    return std::make_shared<MapLiteralExpr>(std::move(entries), line, column);
+  }
+
   if (match({TokenType::INT_LITERAL})) {
     Token token = previous();
     return std::make_shared<LiteralExpr>(static_cast<int32_t>(token.intValue),
@@ -849,6 +1095,9 @@ ExprPtr Parser::primary() {
 
   if (match({TokenType::STRING_LITERAL})) {
     Token token = previous();
+    if (token.interpolated) {
+      return interpolatedString(token);
+    }
     return std::make_shared<LiteralExpr>(token.stringValue, TypeInfo(DataType::STRING),
                                          token.line, token.column);
   }
@@ -872,6 +1121,43 @@ ExprPtr Parser::primary() {
   }
 
   throw error("Expected expression");
+}
+
+ExprPtr Parser::interpolatedString(const Token &token) {
+  std::vector<InterpolatedStringExpr::Part> parts;
+
+  for (const auto &part : token.stringParts) {
+    if (!part.isExpr) {
+      parts.push_back({false, part.text, nullptr});
+      continue;
+    }
+
+    Lexer subLexer(part.text, _filename);
+    std::vector<Token> tokens;
+    try {
+      tokens = subLexer.tokenize();
+    } catch (const std::exception &e) {
+      throw error(std::string("Invalid string interpolation: ") + e.what());
+    }
+    for (const auto &t : tokens) {
+      if (t.type == TokenType::UNKNOWN) {
+        throw error("Invalid character in string interpolation");
+      }
+    }
+
+    Parser subParser(tokens, _filename);
+    ExprPtr subExpr;
+    try {
+      subExpr = subParser.parseExpression();
+    } catch (const ParseError &e) {
+      throw error(std::string("Invalid expression in string interpolation: ") +
+                  e.what());
+    }
+    parts.push_back({true, "", subExpr});
+  }
+
+  return std::make_shared<InterpolatedStringExpr>(std::move(parts), token.line,
+                                                  token.column);
 }
 
 } // namespace Script

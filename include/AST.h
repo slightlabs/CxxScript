@@ -96,6 +96,17 @@ public:
       : Expression(ln, col), operand(expr), op(o) {}
 };
 
+// Increment/decrement on a variable or index target: x++, ++x, arr[i]--
+class UpdateExpr : public Expression {
+public:
+  ExprPtr target;   // VariableExpr or IndexExpr
+  bool increment;   // ++ when true, -- when false
+  bool prefix;      // ++x when true, x++ when false
+
+  UpdateExpr(ExprPtr t, bool inc, bool pre, int ln = 0, int col = 0)
+      : Expression(ln, col), target(t), increment(inc), prefix(pre) {}
+};
+
 class CallExpr : public Expression {
 public:
   std::string functionName;
@@ -131,6 +142,16 @@ public:
       : Expression(ln, col), elements(elems) {}
 };
 
+// Map literal, e.g. {"a": 1, "b": 2}
+class MapLiteralExpr : public Expression {
+public:
+  std::vector<std::pair<ExprPtr, ExprPtr>> entries; // key, value
+
+  MapLiteralExpr(std::vector<std::pair<ExprPtr, ExprPtr>> e, int ln = 0,
+                 int col = 0)
+      : Expression(ln, col), entries(std::move(e)) {}
+};
+
 class IndexExpr : public Expression {
 public:
   ExprPtr arrayExpr;
@@ -138,6 +159,31 @@ public:
 
   IndexExpr(ExprPtr arr, ExprPtr idx, int ln = 0, int col = 0)
       : Expression(ln, col), arrayExpr(arr), indexExpr(idx) {}
+};
+
+// Member access on a struct value: obj.field
+class MemberExpr : public Expression {
+public:
+  ExprPtr object;
+  std::string member;
+
+  MemberExpr(ExprPtr obj, const std::string &m, int ln = 0, int col = 0)
+      : Expression(ln, col), object(obj), member(m) {}
+};
+
+// Interpolated string literal, e.g. "name=${name}, id=${id + 1}"
+class InterpolatedStringExpr : public Expression {
+public:
+  struct Part {
+    bool isExpr;
+    std::string text;
+    ExprPtr expr;
+  };
+
+  std::vector<Part> parts;
+
+  InterpolatedStringExpr(std::vector<Part> p, int ln = 0, int col = 0)
+      : Expression(ln, col), parts(std::move(p)) {}
 };
 
 // Statement Nodes
@@ -160,10 +206,12 @@ public:
   TypeInfo type;
   std::string name;
   ExprPtr initializer;
+  bool isConst;
 
   VarDeclStmt(TypeInfo t, const std::string &n, ExprPtr init, int ln = 0,
-              int col = 0)
-      : Statement(ln, col), type(t), name(n), initializer(init) {}
+              int col = 0, bool isConst = false)
+      : Statement(ln, col), type(t), name(n), initializer(init),
+        isConst(isConst) {}
 };
 
 class AssignStmt : public Statement {
@@ -173,7 +221,13 @@ public:
     PLUS_ASSIGN,
     MINUS_ASSIGN,
     MULT_ASSIGN,
-    DIV_ASSIGN
+    DIV_ASSIGN,
+    MOD_ASSIGN,
+    BAND_ASSIGN,
+    BOR_ASSIGN,
+    BXOR_ASSIGN,
+    SHL_ASSIGN,
+    SHR_ASSIGN
   };
 
   std::string variableName;
@@ -190,10 +244,41 @@ public:
   ExprPtr arrayExpr;
   ExprPtr indexExpr;
   ExprPtr value;
+  AssignStmt::Operator op;
 
-  IndexAssignStmt(ExprPtr arr, ExprPtr idx, ExprPtr val, int ln = 0,
-                  int col = 0)
-      : Statement(ln, col), arrayExpr(arr), indexExpr(idx), value(val) {}
+  IndexAssignStmt(ExprPtr arr, ExprPtr idx, ExprPtr val,
+                  AssignStmt::Operator o = AssignStmt::Operator::ASSIGN,
+                  int ln = 0, int col = 0)
+      : Statement(ln, col), arrayExpr(arr), indexExpr(idx), value(val), op(o) {}
+};
+
+// Field write on a struct value: obj.field = expr, obj.field += expr, ...
+class MemberAssignStmt : public Statement {
+public:
+  ExprPtr object;
+  std::string member;
+  ExprPtr value;
+  AssignStmt::Operator op;
+
+  MemberAssignStmt(ExprPtr obj, const std::string &m, ExprPtr val,
+                   AssignStmt::Operator o = AssignStmt::Operator::ASSIGN,
+                   int ln = 0, int col = 0)
+      : Statement(ln, col), object(obj), member(m), value(val), op(o) {}
+};
+
+// for (type name : iterable) { ... }
+class ForEachStmt : public Statement {
+public:
+  TypeInfo elemType;
+  std::string varName;
+  ExprPtr iterable;
+  StmtPtr body;
+  bool elemConst;
+
+  ForEachStmt(TypeInfo t, const std::string &name, ExprPtr it, StmtPtr b,
+              int ln = 0, int col = 0, bool elemConst = false)
+      : Statement(ln, col), elemType(t), varName(name), iterable(it), body(b),
+        elemConst(elemConst) {}
 };
 
 class BlockStmt : public Statement {
@@ -302,11 +387,27 @@ public:
 
 using ProcedureDeclPtr = std::shared_ptr<ProcedureDecl>;
 
+// struct Name { type field; ... } — fields reuse Parameter (type + name)
+class StructDecl : public ASTNode {
+public:
+  std::string name;
+  std::vector<Parameter> fields;
+
+  StructDecl(const std::string &n, const std::vector<Parameter> &f, int ln = 0,
+             int col = 0)
+      : ASTNode(ln, col), name(n), fields(f) {}
+};
+
+using StructDeclPtr = std::shared_ptr<StructDecl>;
+
 // Script (collection of procedures)
 class Script {
 public:
   std::string filename;
   std::vector<ProcedureDeclPtr> procedures;
+  std::vector<StructDeclPtr> structs;
+  // import "path"; directives: (path, line)
+  std::vector<std::pair<std::string, int>> imports;
 
   Script(const std::string &file) : filename(file) {}
 };
