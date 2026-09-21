@@ -44,8 +44,16 @@ bool ready = true;
 auto inferred = 1 + 2;        // int32 — see Data Types -> auto
 ```
 
-Variables must be declared before use, and every procedure parameter and return value is
-statically typed — mismatches are reported as compile errors. `const` forbids rebinding the
+Variables should be declared before use. A name that isn't declared in any visible scope still
+compiles — it resolves dynamically at runtime, which is how
+[external variables](../examples/05-external-variables.md) registered after compilation are
+found — and fails with an "undefined variable" runtime error if nothing provides it.
+Redeclaring an already-declared name in the same scope is a compile error
+(`Variable 'x' is already declared in this scope`), while a nested scope may shadow an outer
+name.
+
+Every procedure parameter and return value is statically typed — mismatches are reported as
+compile errors. `const` forbids rebinding the
 variable (`x = ...`, `x += ...`, `x++`) and, for containers, element writes (`a[i] = ...`,
 `m["k"] = ...`, `s.field = ...`). Mutating builtins like `push`/`pop` bypass the check, so
 treat `const` containers as read-only by convention when passing them onward.
@@ -61,6 +69,10 @@ int32 oct    = 0o17;        // 15
 int64 big    = 1_000_000;   // separators for readability
 double sci   = 1.5e-3;
 ```
+
+Literals saturate at `int64`, so the minimum `int64` value cannot be written directly —
+`-9223372036854775808` is unary minus applied to a literal that overflows. Use
+`-9223372036854775807 - 1` instead.
 
 ## String literals and escape sequences
 

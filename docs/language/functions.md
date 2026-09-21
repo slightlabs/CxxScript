@@ -75,6 +75,16 @@ int32 f() {
 }
 ```
 
+A lambda that *returns* a function value needs an explicit `->` return annotation — without it
+the validator cannot tell the return type is callable:
+
+```cpp
+fn(int32) -> fn(int32) -> int32 adder() {
+    return fn(int32 n) -> fn(int32) -> int32 { return fn(int32 x) -> int32 { return x + n; }; };
+}
+int32 f2() { return adder()(5)(10); }   // 15
+```
+
 ## Function values and the `fn` type
 
 Functions are first-class `Value`s with type `fn(params) -> ret`. They can be stored in
@@ -95,7 +105,9 @@ a function to a declared `fn(...)` type checks signature compatibility (paramete
 convertibility); a mismatch is a compile error.
 
 Two function values compare equal (`==`) when they refer to the same callable: same procedure,
-same lambda body with equal captures, or same bound method receiver.
+same lambda body with equal captured environments, or same bound method whose receivers compare
+equal by value. Note a lambda captures its *entire* visible scope at creation — two closures
+from the same factory call still differ if any other local changed between creations.
 
 ## Struct methods
 

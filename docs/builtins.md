@@ -16,7 +16,7 @@ Works on arrays, maps, and strings as noted.
 | `insert(arr, i, v)` | Inserts `v` at index `i` (shifts later elements right). |
 | `removeAt(arr, i)` | Removes and returns the element at index `i`. |
 | `clear(x)` | Empties an array or map in place. |
-| `has(m, k)` | `true` if map `m` contains key `k`. |
+| `has(m, k)` | `true` if map `m` contains key `k`. `k` must convert to the map's key type — an unconvertible probe is a runtime error, not `false`. |
 | `remove(m, k)` | Removes key `k` from map `m`; returns `true` if it existed. |
 | `keys(m)` | Array of the map's keys (sorted order). |
 | `values(m)` | Array of the map's values (in key order). |
@@ -46,7 +46,7 @@ int32 demo() {
 | `toUpper(s)` / `toLower(s)` | ASCII case conversion. |
 | `trim(s)` | Strips leading/trailing whitespace. |
 | `replace(s, from, to)` | Replaces all occurrences of `from` with `to`. |
-| `split(s[, delim])` | Splits into a `string[]` (default delimiter `,`); empty delimiter splits into characters. |
+| `split(s[, delim])` | Splits into a `string[]` (default delimiter `,`); empty delimiter splits into characters. Empty pieces are kept, including a trailing one (`split("a,b,")` → `["a","b",""]`); no match returns `[s]`. |
 | `join(arr[, delim])` | Concatenates elements (stringified) with `delim` between them. |
 | `repeat(s, n)` | `s` repeated `n` times. |
 | `format(fmt, args...)` | Substitutes `{}` placeholders left to right; `{{`/`}}` escape literal braces. |
@@ -84,12 +84,12 @@ string demo() {
 | `toInt(x)` | Converts any value to `int64` (truncates floats, parses strings, bool→0/1, char→code). |
 | `toUInt(x)` | Converts to `uint64`. |
 | `toDouble(x)` / `toFloat(x)` | Numeric conversion to `double`/`float`. |
-| `toString(x)` | Stringifies any value, including arrays/maps/structs (`"[1, 2]"`, `"{k: v}"`). |
+| `toString(x)` | Stringifies any value, including arrays/maps/structs (`"[1, 2]"`, `"{k: v}"`); function values stringify as `"<fn name>"` (`"<fn <lambda>>"` for anonymous). |
 | `toBool(x)` | Converts to `bool` (nonzero, non-empty). |
 | `toChar(x)` | Integer code → `char`, or first char of a string. |
 | `parseInt(s)` | Parses a string to `int64`; **throws** on malformed input. |
 | `parseDouble(s)` | Parses a string to `double`; **throws** on malformed input. |
-| `typeof(x)` | Type name of `x`, e.g. `"int32[][]"`, `"map<string, int32>"`, `"fn(int32) -> int32"`. |
+| `typeof(x)` | Type name of `x`, e.g. `"int32[][]"`, `"map<string, int32>"`, `"fn(int32)->int32"`. |
 
 `parseInt`/`parseDouble` failures are ordinary runtime errors — catchable with
 [`try`/`catch`](language/control-flow.md#try-catch-finally-throw).

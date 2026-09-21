@@ -32,6 +32,10 @@ double combine(float a, double b) {
 
 `%` on floating-point operands uses `fmod` semantics (e.g. `7.5 % 2.0` → `1.5`).
 
+Mixed-width integer arithmetic promotes to the **wider** operand type — `int8 + int16` yields
+`int16`, not `int32` — and comparisons between signed and unsigned integers compare the actual
+numeric values (`int32(-1) < uint8(200)` is `true`).
+
 ### `char`
 
 `char` literals use single quotes and support the same escape sequences as strings (`\'`, `\"`,
@@ -48,6 +52,9 @@ string gradeMessage(char grade) {
 int32 nextCode(char c) { return c + 1; } // promotes to int32, e.g. 'a' -> 98
 char nextChar(char c) { return c + 1; }  // stays char, e.g. 'a' -> 'b'
 ```
+
+Arithmetic on two `char` operands stays `char` and wraps modulo 256 — `'z' + 'z'`
+(122 + 122 = 244) wraps to `-12` as a signed `char`.
 
 ### `auto`
 
@@ -196,6 +203,6 @@ enum names, and name clashes with structs/procedures are compile errors.
 ## `typeof` and introspection
 
 `typeof(v)` returns the type name (`"int32[][]"`, `"map<string, int32>"`, `"Point"`,
-`"fn(int32) -> int32"`); `isArray(v)`/`isMap(v)` test the runtime kind.
+`"fn(int32)->int32"`); `isArray(v)`/`isMap(v)` test the runtime kind.
 
 Next: [Operators](operators.md).

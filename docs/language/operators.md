@@ -8,7 +8,8 @@ to `double`. `char` participates in arithmetic like a small integer (its code po
 with a `char` and `string` concatenates the literal character.
 
 `+` also concatenates strings (`"a" + "b"`) and — with a string on either side — stringifies the
-other operand (`"n=" + 42`).
+other operand (`"n=" + 42`). Stringification via `+` works for scalars only; combining a string
+with an array, map, or struct is a runtime error — stringify it first with `toString(x)`.
 
 ```cpp
 int32 remainder(int32 a, int32 b) { return a % b; }
@@ -37,8 +38,9 @@ containers:
   is smaller).
 - **Maps** support `==`/`!=` (order-independent); ordering a map is a runtime error.
 - **Structs** support `==`/`!=` field-wise.
-- **Functions** support `==`/`!=` by callable identity (two references to the same procedure or
-  lambda compare equal); ordering throws.
+- **Functions** support `==`/`!=`: equal when they are the same procedure, lambdas with the
+  same body *and* equal captured environments, or bound methods whose receivers compare equal
+  by value. Ordering a function value throws.
 
 ## Bitwise (integers only)
 
@@ -84,6 +86,11 @@ int32 accumulate(int32 n) {
 
 `=` on a container assigns the reference — both names then share the same elements. Slices
 (`a[1:3]`) produce independent copies.
+
+!!! note
+    Compound assignment stores the *promoted* result back into the variable, so a narrow
+    variable widens rather than wraps: `int8 x = 127; x += 1` leaves `x` holding `128` as an
+    `int32`. Plain `=` assignment, by contrast, converts back to the declared type.
 
 !!! note
     Compound assignment on an [external variable](../examples/05-external-variables.md) requires
