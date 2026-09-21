@@ -611,10 +611,13 @@ int compareValues(const Value &a, const Value &b, int depth) {
     return ua < ub ? -1 : (ua > ub ? 1 : 0);
   }
   if (aUns != bUns) {
-    double da = static_cast<double>(aUns ? ValueHelper::toUInt64(a)
-                                         : ValueHelper::toInt64(a));
-    double db = static_cast<double>(bUns ? ValueHelper::toUInt64(b)
-                                         : ValueHelper::toInt64(b));
+    // Cast inside each branch: a `?:` over uint64_t/int64_t would convert
+    // the int64_t result to uint64_t before the double cast, so negative
+    // signed values would compare as huge positives.
+    double da = aUns ? static_cast<double>(ValueHelper::toUInt64(a))
+                     : static_cast<double>(ValueHelper::toInt64(a));
+    double db = bUns ? static_cast<double>(ValueHelper::toUInt64(b))
+                     : static_cast<double>(ValueHelper::toInt64(b));
     return da < db ? -1 : (da > db ? 1 : 0);
   }
   int64_t ia = ValueHelper::toInt64(a);
@@ -769,7 +772,9 @@ bool equalsDepth(const Value &a, const Value &b, int depth) {
     }
     return std::get<bool>(a) == std::get<bool>(b);
   }
-  return ValueHelper::toInt64(a) == ValueHelper::toInt64(b);
+  // Integer/char equality goes through compareValues so a uint64 above
+  // INT64_MAX never compares equal to a negative signed value.
+  return compareValues(a, b, depth) == 0;
 }
 } // namespace
 

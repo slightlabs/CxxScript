@@ -177,6 +177,13 @@ set(CXXSCRIPT_TEST_SOURCES
     test_debugger
     test_struct
     test_language_v2
+    test_formatter
+    test_limits
+    test_builtins_edge
+    test_host_api
+    test_language_edge
+    test_lexer_edge
+    test_datatypes
 )
 
 set(CXXSCRIPT_TEST_TARGETS "")

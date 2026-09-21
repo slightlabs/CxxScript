@@ -288,8 +288,19 @@ private:
     if (_scopes.empty()) {
       enterScope();
     }
-    _scopes.back()[name] = VarInfo{type, isConst, noWarnUnused, noWarnUnused,
-                                   line, column};
+    auto &scope = _scopes.back();
+    // Same-scope redeclaration of declared variables is an error. Implicit
+    // bindings (params, fields, `this`, snippet globals — all marked
+    // noWarnUnused) may still be shadowed by a declared local.
+    if (!noWarnUnused) {
+      auto it = scope.find(name);
+      if (it != scope.end() && !it->second.noWarnUnused) {
+        emit("Variable '" + name + "' is already declared in this scope", line,
+             column);
+      }
+    }
+    scope[name] = VarInfo{type, isConst, noWarnUnused, noWarnUnused, line,
+                          column};
   }
 
   void markUsed(const std::string &name) {
