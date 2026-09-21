@@ -75,14 +75,25 @@ int32 f() {
 }
 ```
 
-A lambda that *returns* a function value needs an explicit `->` return annotation — without it
-the validator cannot tell the return type is callable:
+Return-type inference also applies to lambdas that return function values — the validator
+unifies the `return` statements' types, so `auto` deduces a callable `fn` signature:
 
 ```cpp
-fn(int32) -> fn(int32) -> int32 adder() {
-    return fn(int32 n) -> fn(int32) -> int32 { return fn(int32 x) -> int32 { return x + n; }; };
+int32 f2() {
+    auto adder = fn(int32 n) { return fn(int32 x) { return x + n; }; };
+    auto add5 = adder(5);              // deduced: fn(int32) -> int32
+    return add5(10);                   // 15
 }
-int32 f2() { return adder()(5)(10); }   // 15
+```
+
+If the return types conflict (`return n` vs `return "neg"`) or can't be inferred (untyped
+parameters), the result type stays dynamic — calls still work, just without static checking.
+An explicit `->` annotation forces the type at compile time:
+
+```cpp
+auto adder = fn(int32 n) -> fn(int32) -> int32 {
+    return fn(int32 x) -> int32 { return x + n; };
+};
 ```
 
 ## Function values and the `fn` type

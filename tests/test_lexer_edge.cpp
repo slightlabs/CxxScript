@@ -184,6 +184,41 @@ TEST(LexerEdgeTest, StringEscapesDecoded) {
   EXPECT_EQ(toks[0].stringValue, "a\n\t\"b\\");
 }
 
+TEST(LexerEdgeTest, RemainingEscapesDecoded) {
+  // \r and \0 decode; \' inside a string is an unknown escape, preserved as-is.
+  auto toks = lex("\"\\r\\0\\'\" '\\\''");
+  ASSERT_GE(toks.size(), 2u);
+  EXPECT_EQ(toks[0].type, TokenType::STRING_LITERAL);
+  EXPECT_EQ(toks[0].stringValue, std::string("\r\0\\'", 4));
+  EXPECT_EQ(toks[1].type, TokenType::CHAR_LITERAL);
+  EXPECT_EQ(toks[1].charValue, '\'');
+}
+
+TEST(LexerEdgeTest, EscapeInsideInterpolationExpression) {
+  // An escaped quote inside ${...} must not end the string or the expr part.
+  auto toks = lex("\"${\"a\\nb\" + \"c\\t\"} tail\"");
+  ASSERT_GE(toks.size(), 1u);
+  EXPECT_EQ(toks[0].type, TokenType::STRING_LITERAL);
+  ASSERT_TRUE(toks[0].interpolated);
+  ASSERT_GE(toks[0].stringParts.size(), 3u);
+  // Leading ${ means part 0 is an empty literal, part 1 is the expression
+  // (its raw source text, escapes preserved for re-lexing).
+  EXPECT_FALSE(toks[0].stringParts[0].isExpr);
+  EXPECT_TRUE(toks[0].stringParts[1].isExpr);
+  EXPECT_NE(toks[0].stringParts[1].text.find("\"a\\nb\""), std::string::npos);
+  EXPECT_EQ(toks[0].stringParts[2].text, " tail");
+}
+
+TEST(LexerEdgeTest, CharLiteralInsideInterpolationExpression) {
+  // '}' inside ${...} must not terminate the interpolation early.
+  auto toks = lex("\"${x == '}' ? 1 : 2}\"");
+  ASSERT_GE(toks.size(), 1u);
+  ASSERT_TRUE(toks[0].interpolated);
+  ASSERT_GE(toks[0].stringParts.size(), 2u);
+  EXPECT_TRUE(toks[0].stringParts[1].isExpr);
+  EXPECT_NE(toks[0].stringParts[1].text.find("'}'"), std::string::npos);
+}
+
 TEST(LexerEdgeTest, KeywordsVsIdentifiers) {
   auto t = types("if else while for return switch case default do break "
                  "continue const import struct try catch throw finally enum "

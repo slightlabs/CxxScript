@@ -159,8 +159,14 @@ public:
   // Clear all loaded scripts
   void clear();
 
-  // Optional execution guardrails (0 means unlimited)
-  void setExecutionLimits(size_t maxCallDepth, size_t maxSteps);
+  // Optional execution guardrails (0 means unlimited):
+  //   maxCallDepth   - max nested script calls
+  //   maxSteps       - max statements/expressions per top-level execution
+  //   maxStackBytes  - approx. native stack the script may consume; guards
+  //                    against process crashes from deep recursion on
+  //                    platforms/threads with small stacks
+  void setExecutionLimits(size_t maxCallDepth, size_t maxSteps,
+                          size_t maxStackBytes = 0);
   void clearExecutionLimits();
 
   // Optional memory guardrails (0 means unlimited):

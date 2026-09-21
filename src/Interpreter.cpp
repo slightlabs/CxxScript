@@ -395,12 +395,14 @@ void Interpreter::addProcedure(const ProcedureDeclPtr &proc,
   ++_callCacheVersion;
 }
 
-void Interpreter::setExecutionLimits(size_t maxCallDepth, size_t maxSteps) {
+void Interpreter::setExecutionLimits(size_t maxCallDepth, size_t maxSteps,
+                                     size_t maxStackBytes) {
   _maxCallDepth = maxCallDepth;
   _maxSteps = maxSteps;
+  _maxStackBytes = maxStackBytes;
 }
 
-void Interpreter::clearExecutionLimits() { setExecutionLimits(0, 0); }
+void Interpreter::clearExecutionLimits() { setExecutionLimits(0, 0, 0); }
 
 void Interpreter::setMemoryLimits(size_t maxArraySize, size_t maxStringLength,
                                   size_t maxAllocations) {
@@ -471,6 +473,7 @@ Value Interpreter::executeProcedure(const std::string &name,
   }
 
   bool topLevel = !_executionActive;
+  char stackMarker;
   if (topLevel) {
     _executionActive = true;
     _currentCallDepth = 0;
@@ -478,6 +481,7 @@ Value Interpreter::executeProcedure(const std::string &name,
     _allocationCount = 0;
     _callSiteLine = 0;
     _callSiteColumn = 0;
+    _stackBase = &stackMarker;
   }
 
   try {
@@ -516,6 +520,7 @@ Value Interpreter::executeProcedure(const std::string &name,
 
 Value Interpreter::executeStatements(const std::vector<StmtPtr> &statements) {
   bool topLevel = !_executionActive;
+  char stackMarker;
   if (topLevel) {
     _executionActive = true;
     _currentCallDepth = 0;
@@ -523,6 +528,7 @@ Value Interpreter::executeStatements(const std::vector<StmtPtr> &statements) {
     _allocationCount = 0;
     _callSiteLine = 0;
     _callSiteColumn = 0;
+    _stackBase = &stackMarker;
   }
 
   Environment *previousEnv = _currentEnv;
@@ -763,6 +769,23 @@ Value Interpreter::invokeCallable(
     restoreFrame();
     throw RuntimeError("Maximum call depth exceeded", _currentFile, line,
                        column, name, /*fatal=*/true);
+  }
+
+  if (_maxStackBytes > 0 && _stackBase != nullptr) {
+    // The evaluator recurses natively — measure real stack consumption so
+    // deep script recursion fails cleanly instead of overflowing the
+    // process stack (direction-agnostic comparison).
+    char marker;
+    const char *cur = &marker;
+    size_t used = cur > _stackBase ? static_cast<size_t>(cur - _stackBase)
+                                   : static_cast<size_t>(_stackBase - cur);
+    if (used > _maxStackBytes) {
+      restoreFrame();
+      throw RuntimeError("Native stack limit exceeded (" +
+                             std::to_string(used) + " > " +
+                             std::to_string(_maxStackBytes) + ")",
+                         _currentFile, line, column, name, /*fatal=*/true);
+    }
   }
 
   size_t required = requiredParamCount(params);

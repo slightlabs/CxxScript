@@ -138,7 +138,8 @@ All limits are optional and disabled by default (`0` means unlimited). Violation
 **fatal** runtime error that script `try`/`catch` cannot suppress.
 
 ```cpp
-void setExecutionLimits(size_t maxCallDepth, size_t maxSteps);
+void setExecutionLimits(size_t maxCallDepth, size_t maxSteps,
+                        size_t maxStackBytes = 0);
 void clearExecutionLimits();
 void setMemoryLimits(size_t maxArraySize, size_t maxStringLength,
                      size_t maxAllocations);
@@ -147,6 +148,11 @@ void clearMemoryLimits();
 
 `maxArraySize` caps elements per array, `maxStringLength` caps produced strings, and
 `maxAllocations` caps total array allocations per top-level execution.
+
+`maxStackBytes` caps the approximate native stack a script may consume. The evaluator
+recurses natively, so on threads with small stacks (or deeply recursive scripts) this
+converts a would-be stack-overflow crash into a fatal error. Disabled by default; the
+`cxxscript` CLI sets a ~6 MB budget.
 
 ### Output and debugging
 

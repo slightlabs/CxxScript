@@ -617,3 +617,88 @@ TEST(HostApiTest, ImportRootsClearedRestoresAnywhere) {
   std::filesystem::remove(lib);
   std::filesystem::remove(main);
 }
+
+// --- External variable holding a function value ------------------------------
+
+TEST(HostApiTest, ExternalVariableHoldingFunctionIsCallable) {
+  // A FuncPtr stored in an external variable is invoked when the script
+  // calls the variable like a procedure.
+  ScriptManager m;
+  std::vector<CompilationError> errors;
+  ASSERT_TRUE(m.loadScriptSource(
+      "fn(int32)->int32 mk() { return fn(int32 x) -> int32 { return x * 3; }; }",
+      "t.script", errors));
+  Value fnVal;
+  std::string err;
+  ASSERT_TRUE(m.executeProcedure("mk", {}, fnVal, err)) << err;
+  ASSERT_TRUE(std::holds_alternative<FuncPtr>(fnVal));
+
+  FuncPtr fn = std::get<FuncPtr>(fnVal);
+  m.registerExternalVariableReadOnly("cb", [fn]() { return fn; });
+
+  ASSERT_TRUE(m.loadScriptSource(
+      "int32 call() { return cb(5); }", "u.script", errors));
+  Value v;
+  ASSERT_TRUE(m.executeProcedure("call", {}, v, err)) << err;
+  EXPECT_EQ(std::get<int32_t>(v), 15);
+}
+
+TEST(HostApiTest, ExternalSettersConvertEachNumericType) {
+  // The setter conversion switch must handle every scalar alternative.
+  ScriptManager m;
+  std::vector<CompilationError> errors;
+  ASSERT_TRUE(m.loadScriptSource("void w(int32 v) { host = v; }", "t.script",
+                                 errors));
+
+  int64_t seen = 0;
+  int conversions = 0;
+  auto setter = [&](const Value &v) {
+    ++conversions;
+    std::visit(
+        [&](auto &&x) {
+          using T = std::decay_t<decltype(x)>;
+          if constexpr (std::is_arithmetic_v<T>) {
+            seen = static_cast<int64_t>(x);
+          } else if constexpr (std::is_same_v<T, char>) {
+            seen = static_cast<int64_t>(x);
+          }
+        },
+        v);
+  };
+  m.registerExternalVariable("host", []() { return static_cast<int64_t>(0); },
+                             setter);
+
+  // No cast syntax exists — each type comes from a declared literal.
+  for (const char *decl :
+       {"int8", "uint8", "int16", "uint16", "int32", "uint32", "int64",
+        "uint64", "char"}) {
+    std::vector<CompilationError> errs;
+    std::string src =
+        std::string("void w() { ") + decl + " v = 7; host = v; }";
+    ASSERT_TRUE(m.loadScriptSource(src, "s.script", errs));
+    Value v;
+    std::string err;
+    ASSERT_TRUE(m.executeProcedure("w", {}, v, err)) << decl << ": " << err;
+    EXPECT_EQ(seen, 7) << decl;
+  }
+  EXPECT_GE(conversions, 9);
+}
+
+TEST(HostApiTest, UncaughtExceptionCarriesLocationAndTrace) {
+  // Uncaught script exceptions format file, line, and a stack trace.
+  std::string path = writeTemp("hostapi_throw.script", R"(
+int32 inner() { throw "boom"; }
+int32 outer() { return inner(); }
+)");
+  ScriptManager m;
+  std::vector<CompilationError> errors;
+  ASSERT_TRUE(m.loadScriptFile(path, errors));
+  Value v;
+  std::string err;
+  ASSERT_FALSE(m.executeProcedure("outer", {}, v, err));
+  EXPECT_NE(err.find("Uncaught script exception"), std::string::npos) << err;
+  EXPECT_NE(err.find("boom"), std::string::npos) << err;
+  EXPECT_NE(err.find("hostapi_throw.script"), std::string::npos) << err;
+  EXPECT_NE(err.find("inner"), std::string::npos) << err;
+  std::filesystem::remove(path);
+}

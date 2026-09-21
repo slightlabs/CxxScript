@@ -509,15 +509,40 @@ int32 f() {
   EXPECT_EQ(std::get<int32_t>(v), 27);
 }
 
-TEST(LanguageEdgeTest, LambdaReturningLambdaUnannotatedRejected) {
-  // Without a declared fn return type the validator cannot see that the
-  // call result is callable.
-  EXPECT_FALSE(compiles(
+TEST(LanguageEdgeTest, LambdaReturningLambdaUnannotated) {
+  // The validator infers the lambda's return type from its return
+  // statements — no `-> fn(...)` annotation needed.
+  Value v = run(
       "int32 f() {"
       "  auto adder = fn(int32 n) { return fn(int32 x) { return x + n; }; };"
       "  auto add5 = adder(5);"
       "  return add5(10);"
-      "}"));
+      "}",
+      "f");
+  EXPECT_EQ(std::get<int32_t>(v), 15);
+}
+
+TEST(LanguageEdgeTest, LambdaInferredReturnWidens) {
+  // Mixed numeric returns unify to the wider type.
+  Value v = run(R"(
+int32 f() {
+  auto h = fn(int32 n) { if (n > 0) { return n; } return 1.5; };
+  return toInt(h(2)) + toInt(h(-1));
+})",
+                "f");
+  EXPECT_EQ(std::get<int32_t>(v), 3);
+}
+
+TEST(LanguageEdgeTest, LambdaConflictingReturnsStayDynamic) {
+  // Unrelated return types can't unify — the lambda still works, the
+  // result type just isn't statically known.
+  Value v = run(R"(
+string f() {
+  auto h = fn(int32 n) { if (n > 0) { return n; } return "neg"; };
+  return toString(h(2)) + toString(h(-1));
+})",
+                "f");
+  EXPECT_EQ(std::get<std::string>(v), "2neg");
 }
 
 TEST(LanguageEdgeTest, LambdaEqualityUsesBodyAndCaptures) {
@@ -644,4 +669,19 @@ TEST(LanguageEdgeTest, ImportInsideProcedureRejected) {
 
 TEST(LanguageEdgeTest, BitNotOnStringRejected) {
   EXPECT_FALSE(compiles("int32 f() { return ~\"a\"; }"));
+}
+
+TEST(LanguageEdgeTest, DefaultInitAllScalarTypes) {
+  // Uninitialized declarations of every scalar type zero-initialize —
+  // exercises the full defaultValue switch.
+  Value v = run(R"(
+int64 f() {
+  int8 a; uint8 b; int16 c; uint16 d;
+  int32 e; uint32 g; int64 h; uint64 i;
+  float j; double k; bool l; char m;
+  return a + b + c + d + e + g + h + i + toInt(j) + toInt(k) +
+         (l ? 1 : 0) + m;
+})",
+                "f");
+  EXPECT_EQ(std::get<int64_t>(v), 0);
 }

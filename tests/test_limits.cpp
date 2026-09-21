@@ -298,3 +298,68 @@ TEST(LimitsTest, BothLimitsCanBeActive) {
   EXPECT_NE(msg2.find("Maximum call depth exceeded"), std::string::npos)
       << msg2;
 }
+
+// --- Native stack budget ----------------------------------------------------
+
+TEST(LimitsTest, NativeStackBudgetStopsDeepRecursion) {
+  // A small native-stack budget converts unbounded recursion into a clean
+  // fatal error rather than a native stack overflow.
+  ScriptManager m;
+  m.setExecutionLimits(0, 0, 256 * 1024);
+  std::string msg = runFails(
+      m, "int32 r(int32 x) { return r(x + 1); }", "r",
+      {static_cast<int32_t>(0)});
+  EXPECT_NE(msg.find("Native stack limit exceeded"), std::string::npos) << msg;
+}
+
+TEST(LimitsTest, NativeStackBudgetIsFatalNotCatchable) {
+  // Like other guardrail violations, the stack guard bypasses try/catch.
+  ScriptManager m;
+  m.setExecutionLimits(0, 0, 256 * 1024);
+  std::string msg = runFails(m, R"(
+int32 r(int32 x) {
+  try { return r(x + 1); } catch (e) { return -1; }
+})",
+                             "r", {static_cast<int32_t>(0)});
+  EXPECT_NE(msg.find("Native stack limit exceeded"), std::string::npos) << msg;
+}
+
+TEST(LimitsTest, ShallowRecursionUnderBudgetStillWorks) {
+  // Ordinary call depth is unaffected by the stack budget. Sanitizer builds
+  // inflate frames several-fold, so keep the budget generous.
+  ScriptManager m;
+  m.setExecutionLimits(0, 0, 16 * 1024 * 1024);
+  std::vector<CompilationError> errors;
+  ASSERT_TRUE(m.loadScriptSource(
+      "int32 f(int32 n) { return n == 0 ? 0 : f(n - 1) + 1; }", "t.script",
+      errors));
+  Value v;
+  std::string msg;
+  ASSERT_TRUE(m.executeProcedure("f", {static_cast<int32_t>(50)}, v, msg))
+      << msg;
+  EXPECT_EQ(std::get<int32_t>(v), 50);
+}
+
+TEST(LimitsTest, StackBudgetDisabledByDefault) {
+  // With no budget set, call-depth limits still govern recursion.
+  ScriptManager m;
+  m.setExecutionLimits(32, 0);
+  std::string msg = runFails(
+      m, "int32 r(int32 x) { return r(x + 1); }", "r",
+      {static_cast<int32_t>(0)});
+  EXPECT_NE(msg.find("Maximum call depth exceeded"), std::string::npos) << msg;
+}
+
+TEST(LimitsTest, ClearExecutionLimitsClearsStackBudget) {
+  ScriptManager m;
+  m.setExecutionLimits(0, 0, 1024); // absurdly small — anything would trip it
+  m.clearExecutionLimits();
+  std::vector<CompilationError> errors;
+  ASSERT_TRUE(m.loadScriptSource(
+      "int32 f(int32 n) { return n == 0 ? 0 : f(n - 1) + 1; }", "t.script",
+      errors));
+  Value v;
+  std::string msg;
+  ASSERT_TRUE(m.executeProcedure("f", {static_cast<int32_t>(20)}, v, msg))
+      << msg;
+}

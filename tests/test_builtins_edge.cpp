@@ -619,3 +619,40 @@ TEST(BuiltinsEdgeTest, BuiltinArityErrors) {
   EXPECT_FALSE(runFails("int32 f() { return len(\"a\", \"b\"); }", "f").empty());
   EXPECT_FALSE(runFails("int32 f() { push([1]); return 0; }", "f").empty());
 }
+
+// --- Conversion error paths -------------------------------------------------
+
+TEST(BuiltinsEdgeTest, ContainerConversionErrors) {
+  // toX on containers/structs/functions hits the visit error branches.
+  EXPECT_NE(runFails("int32 f() { int64 n = toInt([1]); return 0; }", "f")
+                .find("Cannot convert array"),
+            std::string::npos);
+  EXPECT_NE(runFails("int32 f() { uint64 n = toUInt([1]); return 0; }", "f")
+                .find("Cannot convert array"),
+            std::string::npos);
+  EXPECT_NE(
+      runFails("int32 f() { double d = toDouble({\"k\": 1}); return 0; }", "f")
+          .find("Cannot convert map"),
+      std::string::npos);
+  // Builtins aren't first-class values, so use a lambda for the FuncPtr path.
+  EXPECT_NE(runFails("int32 f() { double d = toDouble(fn() { return 0; }); "
+                     "return 0; }",
+                     "f")
+                .find("Cannot convert function"),
+            std::string::npos);
+}
+
+TEST(BuiltinsEdgeTest, StructConversionErrors) {
+  EXPECT_NE(runFails(R"(
+struct P { int32 x; }
+int32 f() { int64 n = toInt(P(1)); return 0; })",
+                     "f")
+                .find("Cannot convert struct"),
+            std::string::npos);
+  // Structs are always truthy — toBool is not an error.
+  Value v = run(R"(
+struct P { int32 x; }
+bool f() { return toBool(P(1)); })",
+                "f");
+  EXPECT_TRUE(std::get<bool>(v));
+}

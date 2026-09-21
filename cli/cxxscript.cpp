@@ -32,6 +32,11 @@ using namespace Script;
 
 namespace {
 
+// Cap native stack consumed by the evaluator well below the platform stack
+// (8 MB reserve on MSVC, ~8 MB default elsewhere) so deep script recursion
+// reports a fatal error instead of crashing the process.
+constexpr size_t kStackBudget = 6 * 1024 * 1024;
+
 void printErrors(const std::vector<CompilationError> &errors) {
   for (const auto &e : errors) {
     std::cerr << e.toString() << "\n";
@@ -67,6 +72,7 @@ Value parseArg(const std::string &s) {
 int runFile(const std::string &file, const std::string &proc,
             const std::vector<std::string> &argStrings) {
   ScriptManager manager;
+  manager.setExecutionLimits(0, 0, kStackBudget);
   std::vector<CompilationError> errors;
   if (!manager.loadScriptFile(file, errors)) {
     printErrors(errors);
@@ -391,6 +397,7 @@ private:
 int debugFile(const std::string &file, const std::string &proc,
               const std::vector<std::string> &argStrings) {
   ScriptManager manager;
+  manager.setExecutionLimits(0, 0, kStackBudget);
   std::vector<CompilationError> errors;
   if (!manager.loadScriptFile(file, errors)) {
     printErrors(errors);
@@ -497,6 +504,7 @@ int repl() {
   std::cout << "CxxScript REPL — .help for commands, .quit to exit\n";
 
   auto manager = std::make_unique<ScriptManager>();
+  manager->setExecutionLimits(0, 0, kStackBudget);
   std::string line;
 
   while (true) {
@@ -542,6 +550,7 @@ int repl() {
       }
       if (trimmed == ".reset") {
         manager = std::make_unique<ScriptManager>();
+        manager->setExecutionLimits(0, 0, kStackBudget);
         std::cout << "state cleared\n";
         continue;
       }

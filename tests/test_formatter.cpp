@@ -176,3 +176,51 @@ TEST(FormatterTest, InvalidSourceThrowsParseError) {
 TEST(FormatterTest, UnparseableStatementThrows) {
   EXPECT_THROW(Formatter::format("int32 f(){ 1 + ; }", "t.script"), ParseError);
 }
+
+TEST(FormatterTest, ComprehensiveExpressionForms) {
+  // Exercise every expression/statement form the formatter knows: map
+  // literals, slices with open bounds, member access, enum members,
+  // every compound-assign and binary operator, unary ops, ternary.
+  std::string out = Formatter::format(R"(
+struct Pt { int32 x; int32 mag() { return x * x; } }
+enum Cl { RED = 1, BLUE }
+void every(int32[] arr, map<string,int32> m, Pt p) {
+    int32 i = 0;
+    i += 1; i -= 1; i *= 2; i /= 2; i %= 3;
+    i &= 1; i |= 2; i ^= 3; i <<= 1; i >>= 1;
+    arr[0] += i;
+    p.x -= 2;
+    { int32 scoped = 1; }
+    int32[] sl = arr[1:3];
+    int32[] open = arr[1:];
+    int32[] open2 = arr[:2];
+    map<string,int32> lit = {"k": 7};
+    int32 t = i > 0 ? i : -i;
+    bool lg = (i > 0) && (i < 9) || !(i == 5);
+    int32 bw = (i & 1) | (i ^ 2) << 1 >> 1;
+    int32 cmp = (i == 1 ? 1 : 0) + (i != 2 ? 1 : 0) + (i <= 3 ? 1 : 0) + (i >= 4 ? 1 : 0);
+    int32 un = -i + ~i;
+    int32 cl = Cl.RED;
+    int32 nested = arr[-1];
+}
+)",
+                                    "t.script");
+  EXPECT_NE(out.find("i <<= 1;"), std::string::npos);
+  EXPECT_NE(out.find("i >>= 1;"), std::string::npos);
+  EXPECT_NE(out.find("i %= 3;"), std::string::npos);
+  EXPECT_NE(out.find("arr[0] += i;"), std::string::npos);
+  EXPECT_NE(out.find("p.x -= 2;"), std::string::npos);
+  EXPECT_NE(out.find("arr[1:3]"), std::string::npos);
+  EXPECT_NE(out.find("arr[1:]"), std::string::npos);
+  EXPECT_NE(out.find("arr[:2]"), std::string::npos);
+  EXPECT_NE(out.find("{\"k\": 7}"), std::string::npos);
+  EXPECT_NE(out.find("Cl.RED"), std::string::npos);
+  EXPECT_NE(out.find("arr[-1]"), std::string::npos);
+  // Idempotent on the comprehensive input too.
+  EXPECT_EQ(Formatter::format(out, "t.script"), out);
+}
+
+TEST(FormatterTest, EnumAutoIncrementIsResolved) {
+  std::string out = Formatter::format("enum Cl { RED = 1, BLUE }", "t.script");
+  EXPECT_NE(out.find("BLUE = 2"), std::string::npos);
+}

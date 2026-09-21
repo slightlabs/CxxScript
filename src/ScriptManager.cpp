@@ -258,6 +258,10 @@ private:
   int _loopDepth = 0;
   int _switchDepth = 0;
   bool _allowAnyReturn = false;
+  // While validating an unannotated lambda body, collects each return
+  // statement's expression type so the lambda signature can be inferred.
+  // Unknown-typed returns are recorded too — they defeat inference.
+  std::vector<InferredType> *_lambdaReturnTypes = nullptr;
 
   void emit(const std::string &message, int line, int column) {
     _errors.emplace_back(message, _filename, _currentProcedure, line, column);
@@ -784,7 +788,12 @@ private:
     if (auto *ret = dynamic_cast<ReturnStmt *>(stmt.get())) {
       if (_allowAnyReturn) {
         if (ret->value) {
-          inferExpr(ret->value);
+          InferredType t = inferExpr(ret->value);
+          if (_lambdaReturnTypes) {
+            _lambdaReturnTypes->push_back(t);
+          }
+        } else if (_lambdaReturnTypes) {
+          _lambdaReturnTypes->push_back({true, TypeInfo(DataType::VOID)});
         }
         return;
       }
@@ -1324,7 +1333,15 @@ private:
       for (const auto &p : lam->parameters) {
         defineVar(p.name, p.type, false, /*noWarnUnused*/ true);
       }
+      // Without a `->` annotation, collect return-statement types so the
+      // lambda's inferred signature can carry a real return type.
+      std::vector<InferredType> lambdaReturns;
+      std::vector<InferredType> *savedLambdaReturns = _lambdaReturnTypes;
+      if (!lam->hasRetType) {
+        _lambdaReturnTypes = &lambdaReturns;
+      }
       validateStmt(lam->body);
+      _lambdaReturnTypes = savedLambdaReturns;
       if (lam->hasRetType &&
           (lam->declaredRetType.baseType != DataType::VOID ||
            lam->declaredRetType.isArray || lam->declaredRetType.isMap ||
@@ -1344,11 +1361,49 @@ private:
       for (const auto &p : lam->parameters) {
         params.push_back(p.type);
       }
-      return {true, TypeInfo::functionOf(
-                        params,
-                        lam->hasRetType
-                            ? std::make_shared<TypeInfo>(lam->declaredRetType)
-                            : nullptr)};
+      std::shared_ptr<TypeInfo> retType;
+      if (lam->hasRetType) {
+        retType = std::make_shared<TypeInfo>(lam->declaredRetType);
+      } else {
+        // Unify the collected return types: equal types, or numeric widening
+        // (canConvertCompileTime both ways picks the wider). Mixed bare
+        // `return;`/`return x;`, unknown, or unrelated types stay dynamic.
+        TypeInfo unified(DataType::VOID);
+        bool hasVal = false, hasVoid = false, conflict = false;
+        for (const auto &r : lambdaReturns) {
+          if (!r.known) {
+            conflict = true;
+            break;
+          }
+          const TypeInfo &t = r.type;
+          if (t.baseType == DataType::VOID && !t.isArray && !t.isMap &&
+              !t.isStruct && !t.isFunction) {
+            hasVoid = true;
+            continue;
+          }
+          if (!hasVal) {
+            unified = t;
+            hasVal = true;
+            continue;
+          }
+          if (unified == t || canConvertCompileTime(t, unified)) {
+            continue;
+          }
+          if (canConvertCompileTime(unified, t)) {
+            unified = t;
+            continue;
+          }
+          conflict = true;
+          break;
+        }
+        if (hasVoid && hasVal) {
+          conflict = true;
+        }
+        if (!conflict) {
+          retType = std::make_shared<TypeInfo>(unified);
+        }
+      }
+      return {true, TypeInfo::functionOf(params, retType)};
     }
     if (auto *em = dynamic_cast<EnumMemberExpr *>(expr.get())) {
       if (EnumDeclPtr decl = resolveEnum(em->enumName)) {
@@ -2600,8 +2655,9 @@ size_t ScriptManager::astCacheSize() const { return _astCache.size(); }
 
 void ScriptManager::clearAstCache() { _astCache.clear(); }
 
-void ScriptManager::setExecutionLimits(size_t maxCallDepth, size_t maxSteps) {
-  _interpreter->setExecutionLimits(maxCallDepth, maxSteps);
+void ScriptManager::setExecutionLimits(size_t maxCallDepth, size_t maxSteps,
+                                       size_t maxStackBytes) {
+  _interpreter->setExecutionLimits(maxCallDepth, maxSteps, maxStackBytes);
 }
 
 void ScriptManager::clearExecutionLimits() { _interpreter->clearExecutionLimits(); }
