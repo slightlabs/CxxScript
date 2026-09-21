@@ -651,16 +651,23 @@ TEST(LanguageEdgeTest, ReturnValueInVoidProcedureRejected) {
 }
 
 TEST(LanguageEdgeTest, Int64BoundaryLiterals) {
-  // INT64_MIN can't be written as a literal (the digits don't fit int64);
-  // express it as INT64_MAX + 1 negated instead.
+  // Full-width int64 literals keep their value — including INT64_MIN,
+  // written as -9223372036854775808 (negation wraps safely).
   Value v = run(R"(
 int64 f() {
   int64 maxed = 9223372036854775807;
-  int64 mined = -9223372036854775807 - 1;
+  int64 mined = -9223372036854775808;
   return maxed + mined;
 })",
                 "f");
   EXPECT_EQ(std::get<int64_t>(v), -1);
+
+  Value neg = run("int64 f() { return -5000000000; }", "f");
+  EXPECT_EQ(std::get<int64_t>(neg), -5000000000ll);
+
+  // Bare literals past int64 wrap into two's complement, like hex forms.
+  Value wrap = run("int64 f() { return 9223372036854775808; }", "f");
+  EXPECT_EQ(std::get<int64_t>(wrap), INT64_MIN);
 }
 
 TEST(LanguageEdgeTest, ImportInsideProcedureRejected) {

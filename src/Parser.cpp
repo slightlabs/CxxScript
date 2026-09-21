@@ -356,7 +356,10 @@ EnumDeclPtr Parser::enumDeclaration() {
       bool neg = match({TokenType::MINUS});
       Token value =
           consume(TokenType::INT_LITERAL, "Expected integer value in enum");
-      next = neg ? -value.intValue : value.intValue;
+      // Negate via unsigned wrap so `-9223372036854775808` is a valid member.
+      next = neg ? static_cast<int64_t>(uint64_t(0) -
+                                        static_cast<uint64_t>(value.intValue))
+                 : value.intValue;
     }
     members.emplace_back(member.lexeme, next);
     ++next;
@@ -1381,8 +1384,15 @@ ExprPtr Parser::primary() {
 
   if (match({TokenType::INT_LITERAL})) {
     Token token = previous();
-    return std::make_shared<LiteralExpr>(static_cast<int32_t>(token.intValue),
-                                         TypeInfo(DataType::INT32), token.line,
+    // Literals that don't fit int32 keep their full width as int64 —
+    // truncating them would silently corrupt values like 5000000000.
+    if (token.intValue >= INT32_MIN && token.intValue <= INT32_MAX) {
+      return std::make_shared<LiteralExpr>(static_cast<int32_t>(token.intValue),
+                                           TypeInfo(DataType::INT32),
+                                           token.line, token.column);
+    }
+    return std::make_shared<LiteralExpr>(token.intValue,
+                                         TypeInfo(DataType::INT64), token.line,
                                          token.column);
   }
 

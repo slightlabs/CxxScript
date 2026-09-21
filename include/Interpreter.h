@@ -265,6 +265,10 @@ private:
   const char *_stackBase = nullptr; // set at top-level execution entry
   size_t _currentCallDepth = 0;
   size_t _currentSteps = 0;
+  // Bounded extra steps granted while a `finally` block runs, so cleanup
+  // completes even when the step budget tripped the fatal error.
+  size_t _stepGrace = 0;
+  static constexpr size_t kFinallyStepReserve = 128;
   size_t _maxArraySize = 0;
   size_t _maxStringLength = 0;
   size_t _maxAllocations = 0;

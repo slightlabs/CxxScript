@@ -702,3 +702,70 @@ int32 outer() { return inner(); }
   EXPECT_NE(err.find("inner"), std::string::npos) << err;
   std::filesystem::remove(path);
 }
+
+TEST(HostApiTest, ReentrantExecutionSurfacesUncaughtException) {
+  // A host callback that re-enters executeProcedure mid-execution hits the
+  // ScriptException path: the inner call isn't top-level, so the script
+  // exception propagates and is reported as "Uncaught exception".
+  ScriptManager m;
+  std::vector<CompilationError> errors;
+  ASSERT_TRUE(m.loadScriptSource(
+      "int32 bad() { throw \"kaput\"; }\n"
+      "int32 caller() { reenter(); return 1; }",
+      "t.script", errors));
+
+  std::string innerErr;
+  m.registerExternalFunction(
+      "reenter", [&](const std::vector<Value> &) -> Value {
+        Value v;
+        std::string e;
+        EXPECT_FALSE(m.executeProcedure("bad", {}, v, e));
+        innerErr = e;
+        return static_cast<int32_t>(0);
+      });
+
+  Value v;
+  std::string err;
+  ASSERT_TRUE(m.executeProcedure("caller", {}, v, err)) << err;
+  EXPECT_NE(innerErr.find("Uncaught exception"), std::string::npos) << innerErr;
+  EXPECT_NE(innerErr.find("kaput"), std::string::npos) << innerErr;
+}
+
+// --- Debug hook --------------------------------------------------------------
+
+TEST(HostApiTest, DebugHookReceivesContext) {
+  ScriptManager m;
+  std::vector<CompilationError> errors;
+  ASSERT_TRUE(m.loadScriptSource(R"(
+int32 helper(int32 x) { int32 doubled = x * 2; return doubled; }
+int32 f() { int32 a = 3; return helper(a); })",
+                                 "dbg.script", errors));
+
+  std::vector<Interpreter::DebugContext> seen;
+  m.setDebugHook(
+      [&seen](const Interpreter::DebugContext &ctx) { seen.push_back(ctx); });
+
+  Value v;
+  std::string err;
+  ASSERT_TRUE(m.executeProcedure("f", {}, v, err)) << err;
+  EXPECT_EQ(std::get<int32_t>(v), 6);
+
+  ASSERT_FALSE(seen.empty());
+  bool sawHelper = false;
+  for (const auto &c : seen) {
+    EXPECT_EQ(c.filename, "dbg.script");
+    EXPECT_FALSE(c.procedure.empty());
+    EXPECT_GT(c.line, 0);
+    if (c.procedure == "helper") {
+      sawHelper = true;
+      EXPECT_GE(c.callDepth, 1u);
+      ASSERT_FALSE(c.callStack.empty());
+      EXPECT_EQ(c.callStack.back(), "helper");
+      // The helper's local/parameter should be visible.
+      EXPECT_TRUE(c.variables.count("x") || c.variables.count("doubled"));
+    }
+  }
+  EXPECT_TRUE(sawHelper) << "hook never saw the helper procedure";
+
+  m.setDebugHook(nullptr); // nullptr detaches without crashing
+}

@@ -166,8 +166,8 @@ Rules:
   `Uncaught exception: ...`.
 - **Fatal errors are not catchable**: runtime guardrail violations (call-depth, step-count,
   and allocation limits) bypass `catch` so a hostile script cannot suppress them. `finally`
-  still runs — though when the *step* budget is the limit that tripped, the `finally` block
-  itself may run out of steps before finishing.
+  still runs — it gets a bounded reserve of extra steps (128) so cleanup completes even when
+  the step budget tripped the error, but a `finally` that exceeds the reserve still dies.
 - To rethrow, use `throw e` inside the catch block.
 
 ```cpp

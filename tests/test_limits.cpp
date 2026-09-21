@@ -224,9 +224,9 @@ TEST(LimitsTest, FinallyStillRunsOnFatalLimit) {
   EXPECT_EQ(captured, "cleanup\n");
 }
 
-TEST(LimitsTest, StepBudgetStarvesFinally) {
-  // With the step budget exhausted, finally's own statements have no steps
-  // left to run — the fatal error still propagates.
+TEST(LimitsTest, FinallyGetsBoundedStepReserve) {
+  // An exhausted step budget still lets finally run cleanup — a bounded
+  // reserve is granted so the fatal error can't starve it.
   ScriptManager m;
   m.setExecutionLimits(0, 10);
   std::vector<CompilationError> errors;
@@ -243,7 +243,24 @@ TEST(LimitsTest, StepBudgetStarvesFinally) {
   std::string msg;
   EXPECT_FALSE(m.executeProcedure("f", {}, v, msg));
   EXPECT_NE(msg.find("Maximum execution steps exceeded"), std::string::npos);
-  EXPECT_TRUE(captured.empty());
+  EXPECT_EQ(captured, "cleanup\n");
+}
+
+TEST(LimitsTest, FinallyReserveIsBounded) {
+  // The reserve is finite — a finally that loops forever still dies.
+  ScriptManager m;
+  m.setExecutionLimits(0, 10);
+  std::vector<CompilationError> errors;
+  ASSERT_TRUE(m.loadScriptSource(
+      "int32 f() {\n"
+      "  try { int32 i = 0; while (true) { i += 1; } return i; }\n"
+      "  finally { int32 j = 0; while (true) { j += 1; } }\n"
+      "}",
+      "t.script", errors));
+  Value v;
+  std::string msg;
+  EXPECT_FALSE(m.executeProcedure("f", {}, v, msg));
+  EXPECT_NE(msg.find("Maximum execution steps exceeded"), std::string::npos);
 }
 
 // --- Clearing limits --------------------------------------------------------

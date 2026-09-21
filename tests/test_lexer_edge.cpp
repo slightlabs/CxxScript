@@ -91,6 +91,18 @@ TEST(LexerEdgeTest, FloatLiteralForms) {
   EXPECT_DOUBLE_EQ(toks[3].doubleValue, 0.0015);
 }
 
+TEST(LexerEdgeTest, Int64OverflowLiteralWraps) {
+  // 2^63 doesn't fit int64 but fits uint64 — it wraps to INT64_MIN, which
+  // makes -9223372036854775808 (INT64_MIN) expressible as a literal.
+  auto toks = lex("9223372036854775808 18446744073709551615");
+  ASSERT_GE(toks.size(), 2u);
+  EXPECT_EQ(toks[0].type, TokenType::INT_LITERAL);
+  EXPECT_EQ(toks[0].intValue, INT64_MIN);
+  EXPECT_EQ(toks[1].intValue, -1);
+  // Beyond uint64 is still an error.
+  EXPECT_TRUE(anyUnknown("99999999999999999999"));
+}
+
 TEST(LexerEdgeTest, CharLiteralsAndEscapes) {
   auto toks = lex("'a' '\\n' '\\t' '\\'' '\\\\'");
   ASSERT_GE(toks.size(), 5u);

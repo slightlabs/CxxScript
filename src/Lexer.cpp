@@ -407,7 +407,10 @@ Token Lexer::number() {
     if (isFloat) {
       token.doubleValue = std::stod(numStr);
     } else {
-      token.intValue = std::stoll(numStr);
+      // Parse as unsigned so values up to 2^64-1 lex like the base-prefixed
+      // forms: they wrap into two's-complement int64, which also makes
+      // -9223372036854775808 (INT64_MIN) writable as a literal.
+      token.intValue = static_cast<int64_t>(std::stoull(numStr));
     }
   } catch (const std::exception &) {
     token.type = TokenType::UNKNOWN;

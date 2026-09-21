@@ -481,6 +481,7 @@ Value Interpreter::executeProcedure(const std::string &name,
     _allocationCount = 0;
     _callSiteLine = 0;
     _callSiteColumn = 0;
+    _stepGrace = 0;
     _stackBase = &stackMarker;
   }
 
@@ -528,6 +529,7 @@ Value Interpreter::executeStatements(const std::vector<StmtPtr> &statements) {
     _allocationCount = 0;
     _callSiteLine = 0;
     _callSiteColumn = 0;
+    _stepGrace = 0;
     _stackBase = &stackMarker;
   }
 
@@ -1416,8 +1418,16 @@ Value Interpreter::evaluateUnary(UnaryExpr *expr) {
     if (operandType == DataType::DOUBLE || operandType == DataType::FLOAT) {
       return ValueHelper::createValue(operandType, -ValueHelper::toDouble(operand));
     }
-    return ValueHelper::createValue(DataType::INT32,
-                                    -ValueHelper::toInt64(operand));
+    // Negate in the unsigned domain so INT64_MIN wraps instead of invoking
+    // signed-overflow UB. 64-bit operands keep int64 width; narrower types
+    // promote to int32 like other arithmetic.
+    int64_t v = ValueHelper::toInt64(operand);
+    int64_t neg = static_cast<int64_t>(uint64_t(0) - static_cast<uint64_t>(v));
+    DataType t = (operandType == DataType::INT64 ||
+                  operandType == DataType::UINT64)
+                     ? DataType::INT64
+                     : DataType::INT32;
+    return ValueHelper::createValue(t, neg);
   }
   case UnaryExpr::Operator::LOGICAL_NOT:
     return ValueHelper::logicalNot(operand);
@@ -2387,6 +2397,23 @@ void Interpreter::executeTryCatch(TryCatchStmt *stmt) {
   bool caught = false;
   Value thrown;
 
+  // A finally block always gets a bounded reserve of steps beyond an
+  // exhausted step budget, so cleanup can complete on fatal errors without
+  // giving scripts an escape hatch.
+  auto runFinally = [&]() {
+    if (!stmt->finallyBlock) {
+      return;
+    }
+    _stepGrace += kFinallyStepReserve;
+    try {
+      execute(stmt->finallyBlock);
+    } catch (...) {
+      _stepGrace -= kFinallyStepReserve;
+      throw;
+    }
+    _stepGrace -= kFinallyStepReserve;
+  };
+
   try {
     execute(stmt->tryBlock);
   } catch (const ScriptException &se) {
@@ -2395,18 +2422,14 @@ void Interpreter::executeTryCatch(TryCatchStmt *stmt) {
   } catch (const RuntimeError &re) {
     if (re.fatal) {
       // Resource-limit violations are not script-catchable.
-      if (stmt->finallyBlock) {
-        execute(stmt->finallyBlock);
-      }
+      runFinally();
       throw;
     }
     caught = true;
     thrown = std::string(re.what());
   } catch (...) {
     // return/break/continue propagate, but finally still runs.
-    if (stmt->finallyBlock) {
-      execute(stmt->finallyBlock);
-    }
+    runFinally();
     throw;
   }
 
@@ -2441,15 +2464,11 @@ void Interpreter::executeTryCatch(TryCatchStmt *stmt) {
       }
     }
   } catch (...) {
-    if (stmt->finallyBlock) {
-      execute(stmt->finallyBlock);
-    }
+    runFinally();
     throw;
   }
 
-  if (stmt->finallyBlock) {
-    execute(stmt->finallyBlock);
-  }
+  runFinally();
 }
 
 RuntimeError Interpreter::runtimeError(const std::string &message, int line,
@@ -2463,7 +2482,7 @@ void Interpreter::consumeExecutionStep(int line, int column) {
   }
 
   ++_currentSteps;
-  if (_currentSteps > _maxSteps) {
+  if (_currentSteps > _maxSteps && _currentSteps - _maxSteps > _stepGrace) {
     throw RuntimeError("Maximum execution steps exceeded", _currentFile, line,
                        column, _currentProcedure, /*fatal=*/true);
   }

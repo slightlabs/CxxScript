@@ -70,9 +70,9 @@ int64 big    = 1_000_000;   // separators for readability
 double sci   = 1.5e-3;
 ```
 
-Literals saturate at `int64`, so the minimum `int64` value cannot be written directly —
-`-9223372036854775808` is unary minus applied to a literal that overflows. Use
-`-9223372036854775807 - 1` instead.
+Literals are 64-bit: values up to `2^64-1` wrap into two's-complement `int64` (same as the
+base-prefixed forms), so `-9223372036854775808` (`int64` minimum) is writable directly.
+Larger magnitudes are rejected by the lexer.
 
 ## String literals and escape sequences
 
