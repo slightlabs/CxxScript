@@ -86,13 +86,6 @@ set(LIBRARY_HEADERS
 # Create static library
 add_library(CxxScript STATIC ${LIBRARY_SOURCES} ${LIBRARY_HEADERS})
 
-# Command-line runner / REPL
-add_executable(cxxscript ${CMAKE_CURRENT_SOURCE_DIR}/cli/cxxscript.cpp)
-target_link_libraries(cxxscript PRIVATE CxxScript)
-set_target_properties(cxxscript PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-
 # Include directories for the library
 target_include_directories(CxxScript PUBLIC
     $<BUILD_INTERFACE:${INCLUDE_DIR}>
@@ -105,6 +98,16 @@ set_target_properties(CxxScript PROPERTIES
 )
 
 if(CXXSCRIPT_BUILD_EXAMPLES)
+# Command-line runner / REPL. The target name must differ from the CxxScript
+# library target by more than case so generated build files don't collide on
+# case-insensitive filesystems (Windows/macOS); the binary is still `cxxscript`.
+add_executable(cxxscript_cli ${CMAKE_CURRENT_SOURCE_DIR}/cli/cxxscript.cpp)
+target_link_libraries(cxxscript_cli PRIVATE CxxScript)
+set_target_properties(cxxscript_cli PROPERTIES
+    OUTPUT_NAME cxxscript
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
 # Examples
 add_executable(example_usage ${EXAMPLES_DIR}/example_usage.cpp)
 target_link_libraries(example_usage PRIVATE CxxScript)
