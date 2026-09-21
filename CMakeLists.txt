@@ -19,6 +19,10 @@ option(CXXSCRIPT_BUILD_BENCHMARKS "Build the benchmark runner" OFF)
 # Compiler flags
 if(MSVC)
     add_compile_options(/W4 /sdl /guard:cf)
+    # The interpreter is a recursive evaluator: link executables with the
+    # ~8 MB stack Unix gets by default (MSVC reserves only 1 MB) so deep
+    # script recursion reaches the call-depth guard instead of crashing.
+    add_link_options(/STACK:8388608)
 else()
     add_compile_options(-Wall -Wextra -fstack-protector-strong)
     add_compile_options(
