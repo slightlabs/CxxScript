@@ -575,6 +575,7 @@ TEST(LanguageEdgeTest, CyclicArrayToStringTruncates) {
   std::string msg;
   ASSERT_TRUE(m.executeProcedure("f", {}, v, msg)) << msg;
   EXPECT_NE(std::get<std::string>(v).find("..."), std::string::npos);
+  cyc->elements.clear(); // break the cycle so the shared_ptr frees
 }
 
 TEST(LanguageEdgeTest, CyclicEqualityDepthGuard) {
@@ -590,6 +591,7 @@ TEST(LanguageEdgeTest, CyclicEqualityDepthGuard) {
   std::string msg;
   EXPECT_FALSE(m.executeProcedure("f", {}, v, msg));
   EXPECT_NE(msg.find("depth limit"), std::string::npos) << msg;
+  cyc->elements.clear(); // break the cycle so the shared_ptr frees
 }
 
 // --- Misc --------------------------------------------------------------------
