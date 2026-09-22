@@ -22,6 +22,14 @@ namespace {
 // Thrown inside the debug hook to unwind a running script on disconnect.
 struct DapAbort {};
 
+#if defined(__SANITIZE_ADDRESS__)
+#define CXXSCRIPT_ASAN 1
+#elif defined(__clang__)
+#if __has_feature(address_sanitizer)
+#define CXXSCRIPT_ASAN 1
+#endif
+#endif
+
 std::string normPath(const std::string &f) {
   if (f.empty() || f.front() == '<') {
     return f;
@@ -438,7 +446,15 @@ private:
 
   void workerMain() {
     ScriptManager mgr;
+    // Cap the script's native-stack use below the worker thread's real
+    // stack. Under ASan each native frame carries redzones (~30x larger —
+    // reaching main alone consumes ~2 MB), so the budget must scale up or
+    // even trivial programs trip the guard.
+#ifdef CXXSCRIPT_ASAN
+    mgr.setExecutionLimits(0, 0, 6 * 1024 * 1024);
+#else
     mgr.setExecutionLimits(0, 0, 64 * 1024);
+#endif
 
     std::vector<CompilationError> errors;
     if (!mgr.loadScriptFile(_program, errors)) {

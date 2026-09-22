@@ -757,10 +757,10 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (cmd == "lsp") {
-    return Script::runLanguageServer(std::cin, std::cout);
+    return ::Script::runLanguageServer(std::cin, std::cout);
   }
   if (cmd == "dap") {
-    return Script::runDebugAdapter(std::cin, std::cout);
+    return ::Script::runDebugAdapter(std::cin, std::cout);
   }
   if (cmd == "repl") {
     return repl();

@@ -1,5 +1,6 @@
 #include "VM.h"
 #include "Builtins.h"
+#include "EnvVar.h"
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -830,8 +831,7 @@ bool VM::compileProcedure(const ProcedureDeclPtr &proc) {
       BytecodeCompiler::compileFunction(proc->name, proc->parameters,
                                         proc->body, proc->returnType, file);
   if (!fn) {
-    static bool debugFallback =
-        std::getenv("CXXSCRIPT_VM_DEBUG") != nullptr;
+    static const bool debugFallback = envVar("CXXSCRIPT_VM_DEBUG").has_value();
     if (debugFallback) {
       std::fprintf(stderr, "[vm] compile fallback: %s\n", proc->name.c_str());
     }
@@ -1258,7 +1258,6 @@ Value VM::binaryOp(Op op, const Value &l, const Value &r, int line,
 void VM::resolveCallSite(Frame &f, const std::string &name, CallSite &site,
                          int line, int column) {
   site.kind = CallSite::Kind::NONE;
-  site.varFunc.reset();
   site.procDecl.reset();
   site.structDecl.reset();
 
@@ -1270,7 +1269,7 @@ void VM::resolveCallSite(Frame &f, const std::string &name, CallSite &site,
       throw vmError("'" + name + "' is not a function value", line, column);
     }
     site.kind = CallSite::Kind::VAR_FUNC;
-    site.varFunc = *fn;
+    _stack.push_back(*fn); // consumed by CALL; dies with any unwind
     return;
   }
 
@@ -1293,7 +1292,7 @@ void VM::resolveCallSite(Frame &f, const std::string &name, CallSite &site,
           fv->procs = std::move(methods);
           fv->captured["this"] = th;
           site.kind = CallSite::Kind::VAR_FUNC;
-          site.varFunc = fv;
+          _stack.push_back(Value(std::move(fv)));
           return;
         }
       }
@@ -1335,7 +1334,7 @@ void VM::resolveCallSite(Frame &f, const std::string &name, CallSite &site,
     Value ev = vit->second.getter();
     if (std::holds_alternative<FuncPtr>(ev)) {
       site.kind = CallSite::Kind::EXT_VAR;
-      site.varFunc = std::get<FuncPtr>(ev);
+      _stack.push_back(std::move(ev));
       return;
     }
   }
@@ -1376,13 +1375,16 @@ void VM::performCall(Frame &, const std::string &name, CallSite &site,
   switch (site.kind) {
   case CallSite::Kind::VAR_FUNC:
   case CallSite::Kind::EXT_VAR: {
+    // CALL_RESOLVE parked the resolved function value below the args.
+    Value callee = std::move(_stack.back());
+    _stack.pop_back();
     _interp._callSiteLine = line;
     _interp._callSiteColumn = column;
-    callValue(site.varFunc, std::move(args), line, column);
+    callValue(callee, std::move(args), line, column);
     return;
   }
   case CallSite::Kind::PROC: {
-    ProcedureDeclPtr proc = site.procDecl;
+    ProcedureDeclPtr proc = site.procDecl.lock();
     if (!proc) {
       // Multi-overload set or cache miss: resolve from the live table.
       auto pit = _interp._procedures.find(name);
@@ -1413,8 +1415,17 @@ void VM::performCall(Frame &, const std::string &name, CallSite &site,
     return;
   }
   case CallSite::Kind::STRUCT_CTOR: {
-    _stack.push_back(
-        _interp.constructStruct(site.structDecl, args, line, column));
+    StructDeclPtr decl = site.structDecl.lock();
+    if (!decl) {
+      // The struct was unloaded after CALL_RESOLVE ran (e.g. hot reload
+      // during argument evaluation).
+      auto sIt = _interp._structs.find(name);
+      if (sIt == _interp._structs.end()) {
+        throw vmError("Undefined function: " + name, line, column);
+      }
+      decl = sIt->second;
+    }
+    _stack.push_back(_interp.constructStruct(decl, args, line, column));
     return;
   }
   case CallSite::Kind::BUILTIN: {
@@ -1447,6 +1458,11 @@ void VM::performCall(Frame &, const std::string &name, CallSite &site,
     }
     Value r = Builtins::call(_interp, name, &expr);
     _interp.checkResultSize(r);
+    // Drop argument values from the pooled literals: a function value held
+    // here would keep its ProcedureDecls (and their chunks) alive.
+    for (size_t i = 0; i < args.size(); ++i) {
+      site.builtinArgs[i]->value = int32_t(0);
+    }
     _stack.push_back(std::move(r));
     return;
   }
@@ -2051,7 +2067,7 @@ Value VM::runSnippet(const std::vector<StmtPtr> &statements) {
 // --- Dispatch loop -----------------------------------------------------------
 
 Value VM::run(size_t base) {
-  static const bool kCount = std::getenv("CXXSCRIPT_VM_COUNT") != nullptr;
+  static const bool kCount = envVar("CXXSCRIPT_VM_COUNT").has_value();
   uint64_t icount = 0;
   while (_frames.size() > base) {
     if (_pending.kind != Pending::Kind::NONE) {

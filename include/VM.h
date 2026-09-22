@@ -122,9 +122,12 @@ struct CallSite {
   // ordering: dispatch errors precede arg side effects).
   enum class Kind { NONE, VAR_FUNC, PROC, EXT_VAR, EXTERN, STRUCT_CTOR,
                     BUILTIN } kind = Kind::NONE;
-  FuncPtr varFunc;
-  ProcedureDeclPtr procDecl;
-  StructDeclPtr structDecl;
+  // Resolved callees are borrowed, not owned: function values ride the
+  // operand stack between CALL_RESOLVE and CALL (so nothing here keeps a
+  // FunctionValue/ProcedureDecl alive — strong refs would close
+  // shared_ptr cycles through ProcedureDecl::vmFunc and leak chunks).
+  std::weak_ptr<ProcedureDecl> procDecl;
+  std::weak_ptr<StructDecl> structDecl;
   // Pooled argument wrappers for BUILTIN dispatch — avoids allocating a
   // CallExpr + LiteralExpr per call; values are overwritten in place.
   std::shared_ptr<CallExpr> builtinExpr;
@@ -173,7 +176,9 @@ struct VMFunction {
   uint32_t bodyStart = 0;   // pc where the function body begins
   StmtPtr body;             // original AST body (interop with the tree-walker)
   bool hasDeclaredRetType = false; // lambda `-> T` present
-  ProcedureDeclPtr decl;    // set for procedures, null for lambdas
+  // Weak back-link to the declaring procedure (decl owns the compiled form
+  // via ProcedureDecl::vmFunc — a strong ref would create a cycle).
+  std::weak_ptr<ProcedureDecl> decl;
 };
 
 using VMFunctionPtr = std::shared_ptr<VMFunction>;

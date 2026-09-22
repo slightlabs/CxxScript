@@ -94,6 +94,7 @@ set(LIBRARY_HEADERS
     ${INCLUDE_DIR}/Json.h
     ${INCLUDE_DIR}/LspServer.h
     ${INCLUDE_DIR}/DapServer.h
+    ${INCLUDE_DIR}/Reflection.h
 )
 
 # Create static library

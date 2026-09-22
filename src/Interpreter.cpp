@@ -1,4 +1,5 @@
 #include "Interpreter.h"
+#include "EnvVar.h"
 #include "VM.h"
 #include <cstdlib>
 #include <iostream>
@@ -239,8 +240,7 @@ Interpreter::Interpreter()
       _rng(std::random_device{}()) {
   // CXXSCRIPT_VM=1 selects the bytecode engine for all executions; mainly
   // used to run the whole test suite through the VM for parity checking.
-  const char *vm = std::getenv("CXXSCRIPT_VM");
-  if (vm && vm[0] == '1' && vm[1] == '\0') {
+  if (envVar("CXXSCRIPT_VM") == "1") {
     setVMEnabled(true);
   }
 }

@@ -139,10 +139,10 @@ TEST(ReflectionTest, MissingFieldsDefaultConstruct) {
 
 TEST(ReflectionTest, UnboundTypeRejectedAtCompileTime) {
   struct Unbound {};
-  static_assert(!Script::HasStructCodec<Unbound>::value,
+  static_assert(!::Script::HasStructCodec<Unbound>::value,
                 "unspecialized codec must not be detected");
-  static_assert(!Script::detail::IsSupportedType<Unbound>::value,
+  static_assert(!::Script::detail::IsSupportedType<Unbound>::value,
                 "unbound types are not valid external-function arguments");
-  static_assert(Script::detail::IsSupportedType<Point>::value,
+  static_assert(::Script::detail::IsSupportedType<Point>::value,
                 "bound types are valid external-function arguments");
 }
