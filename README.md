@@ -38,7 +38,11 @@ cd build && ctest
 - **Control Flow**: if/else, while, for, range-for (`for (x : coll)`), do-while, switch/case/default, ternary `?:`, break/continue, **try/catch/finally/throw**
 - **Compound Assignments**: +=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=; `++`/`--` prefix/postfix
 - **Safety Guardrails**: optional call-depth/step-count/memory limits (fatal — not catchable), import sandboxing (`addImportRoot`, `setImportsEnabled`), per-builtin disabling, parsed-AST caching
-- **Tooling**: `cxxscript` CLI — `run`, `check`, `eval`, `fmt` (formatter), `debug` (breakpoints/stepping), interactive REPL; VS Code grammar under `editors/vscode-cxxscript`
+- **Null value**: `null` literal (`isNull()`), JSON interop (`jsonParse`/`jsonStringify`), and `==`/`!=` semantics; typed slots reject null at compile time or on assignment
+- **Bytecode VM**: alternative stack-based execution engine — `--vm` CLI flag or `setVMEnabled(true)`; identical semantics, faster on compute-heavy scripts
+- **Compiled artifacts**: `cxxscript compile app.script` writes `app.scriptc` (serialized bytecode); `cxxscript run app.scriptc` executes it with no parse/validate pass
+- **Tooling**: `cxxscript` CLI — `run`, `check`, `eval`, `fmt` (formatter), `compile`, `debug` (breakpoints/stepping), `lsp` (language server), `dap` (debug adapter), interactive REPL; VS Code grammar under `editors/vscode-cxxscript`
+- **Struct auto-binding**: `StructCodecOf<T>` member descriptors (see `include/Reflection.h`) let host C++ structs flow through `registerExternalFunction`/`callProcedure` as script struct values — the C++17 descriptor is what P2996 `members_of(^^T)` will eventually generate
 - **External Function Callbacks**: Call C++ functions from scripts with generic argument passing, bulk registration, and typed helper wrappers
 - **External Variables**: Expose host variables to scripts via getters/setters (read/write or read-only helper)
 - **Comprehensive Error Reporting**: Compilation and runtime errors with line numbers, procedure names, and stack traces
@@ -49,12 +53,14 @@ cd build && ctest
 ```
 /cxxscript/
 ├── include/              # Public headers (Library API)
-│   ├── AST.h, DataTypes.h, Formatter.h, Interpreter.h
-│   ├── Lexer.h, Parser.h, ScriptManager.h, Token.h
+│   ├── AST.h, DataTypes.h, Formatter.h, Interpreter.h, Json.h
+│   ├── Lexer.h, Parser.h, ScriptManager.h, Token.h, VM.h
+│   ├── LspServer.h, DapServer.h, Reflection.h
 ├── src/                  # Implementation files
 │   ├── DataTypes.cpp, Formatter.cpp, Interpreter.cpp, Lexer.cpp
-│   ├── Parser.cpp, ScriptManager.cpp, Token.cpp
-├── cli/                  # cxxscript CLI: run/check/eval/fmt/debug/REPL
+│   ├── Parser.cpp, ScriptManager.cpp, Token.cpp, VM.cpp, Json.cpp
+│   ├── LspServer.cpp, DapServer.cpp, CompiledScript.cpp
+├── cli/                  # cxxscript CLI: run/check/eval/fmt/compile/debug/lsp/dap/REPL
 ├── tests/                # Test suite (GoogleTest)
 │   ├── test_lexer.cpp, test_parser.cpp, test_interpreter.cpp
 │   ├── test_error_handling.cpp, test_comprehensive.cpp
@@ -63,6 +69,7 @@ cd build && ctest
 │   ├── test_language_v2.cpp   # new-language-feature suite
 │   └── ...              # maps, structs, const/import, hot reload, etc.
 ├── fuzz/                 # libFuzzer harnesses (lexer, parser, full script)
+├── infra/oss-fuzz/       # OSS-Fuzz project files (project.yaml, Dockerfile, build.sh)
 ├── benchmarks/           # dependency-free perf suite (cxxscript_bench)
 ├── editors/vscode-cxxscript/  # VS Code TextMate grammar + language config
 ├── examples/             # Example applications

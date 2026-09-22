@@ -69,9 +69,14 @@ set(LIBRARY_SOURCES
     ${SRC_DIR}/Lexer.cpp
     ${SRC_DIR}/Parser.cpp
     ${SRC_DIR}/Interpreter.cpp
+    ${SRC_DIR}/VM.cpp
     ${SRC_DIR}/Builtins.cpp
     ${SRC_DIR}/ScriptManager.cpp
     ${SRC_DIR}/Formatter.cpp
+    ${SRC_DIR}/Json.cpp
+    ${SRC_DIR}/LspServer.cpp
+    ${SRC_DIR}/DapServer.cpp
+    ${SRC_DIR}/CompiledScript.cpp
 )
 
 # Library header files
@@ -82,9 +87,13 @@ set(LIBRARY_HEADERS
     ${INCLUDE_DIR}/Parser.h
     ${INCLUDE_DIR}/AST.h
     ${INCLUDE_DIR}/Interpreter.h
+    ${INCLUDE_DIR}/VM.h
     ${INCLUDE_DIR}/Builtins.h
     ${INCLUDE_DIR}/ScriptManager.h
     ${INCLUDE_DIR}/Formatter.h
+    ${INCLUDE_DIR}/Json.h
+    ${INCLUDE_DIR}/LspServer.h
+    ${INCLUDE_DIR}/DapServer.h
 )
 
 # Create static library
@@ -182,8 +191,14 @@ set(CXXSCRIPT_TEST_SOURCES
     test_builtins_edge
     test_host_api
     test_language_edge
+    test_vm
     test_lexer_edge
     test_datatypes
+    test_lsp
+    test_dap
+    test_json
+    test_compiled
+    test_reflection
 )
 
 set(CXXSCRIPT_TEST_TARGETS "")

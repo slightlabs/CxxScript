@@ -769,3 +769,42 @@ int32 f() { int32 a = 3; return helper(a); })",
 
   m.setDebugHook(nullptr); // nullptr detaches without crashing
 }
+
+// --- callProcedure<Ret>(name, args...) --------------------------------------
+
+TEST(HostApiTest, CallProcedureTyped) {
+  ScriptManager m;
+  std::vector<CompilationError> errors;
+  ASSERT_TRUE(m.loadScriptSource(
+      "int64 add(int32 a, int32 b) { return a + b; }\n"
+      "string greet(string who) { return \"hi \" + who; }\n"
+      "double half(int32 n) { return n / 2.0; }\n"
+      "void reset() { }\n",
+      "typed_call.script", errors));
+
+  EXPECT_EQ(m.callProcedure<int64_t>("add", 2, 3), 5);
+  EXPECT_EQ(m.callProcedure<std::string>("greet", std::string("bo")), "hi bo");
+  EXPECT_DOUBLE_EQ(m.callProcedure<double>("half", 7), 3.5);
+  m.callProcedure<void>("reset"); // no throw
+}
+
+TEST(HostApiTest, CallProcedureConvertsArgs) {
+  ScriptManager m;
+  std::vector<CompilationError> errors;
+  ASSERT_TRUE(m.loadScriptSource(
+      "int64 total(int64 a, int64 b, int64 c) { return a + b + c; }",
+      "conv_call.script", errors));
+  // int literals → int64 params; mixed widths convert.
+  EXPECT_EQ(m.callProcedure<int64_t>("total", int32_t(1), int64_t(2), 3), 6);
+}
+
+TEST(HostApiTest, CallProcedureThrowsOnError) {
+  ScriptManager m;
+  std::vector<CompilationError> errors;
+  ASSERT_TRUE(m.loadScriptSource(
+      "int32 boom() { int32 z = 1 / 0; return z; }\n"
+      "int32 ok() { return 1; }",
+      "throwing.script", errors));
+  EXPECT_THROW(m.callProcedure<int32_t>("boom"), std::runtime_error);
+  EXPECT_THROW(m.callProcedure<int32_t>("missing"), std::runtime_error);
+}

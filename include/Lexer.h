@@ -14,6 +14,11 @@ public:
   std::vector<Token> tokenize();
   Token nextToken();
 
+  // All keyword lexemes (for tooling: completion, highlighting).
+  static const std::unordered_map<std::string, TokenType> &keywords() {
+    return _keywords;
+  }
+
   const std::string &getFilename() const { return _filename; }
 
 private:

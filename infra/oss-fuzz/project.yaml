@@ -1,0 +1,9 @@
+homepage: https://github.com/slightlabs/CxxScript
+main_repo: https://github.com/slightlabs/CxxScript.git
+language: c++
+primary_contact: sujithsg@gmail.com
+fuzzing_engines:
+  - libfuzzer
+sanitizers:
+  - address
+  - undefined

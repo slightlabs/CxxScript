@@ -440,12 +440,16 @@ public:
 };
 
 // Procedure Declaration
+struct VMFunction;
+
 class ProcedureDecl : public ASTNode {
 public:
   TypeInfo returnType;
   std::string name;
   std::vector<Parameter> parameters;
   StmtPtr body;
+  // Lazily-compiled bytecode form of this procedure (filled by the VM).
+  std::shared_ptr<VMFunction> vmFunc;
 
   ProcedureDecl(TypeInfo retType, const std::string &n,
                 const std::vector<Parameter> &params, StmtPtr b, int ln = 0,
@@ -498,6 +502,8 @@ struct FunctionValue {
   std::unordered_map<std::string, Value> captured; // lambda captures (by copy)
   // Procedure references and bound methods (may be an overload set).
   std::vector<ProcedureDeclPtr> procs;
+  // Compiled form when this lambda was created by the bytecode VM.
+  std::shared_ptr<VMFunction> vmFunc;
 
   TypeInfo signature() const {
     std::vector<TypeInfo> params;

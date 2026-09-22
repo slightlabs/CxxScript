@@ -2670,6 +2670,12 @@ void ScriptManager::setMemoryLimits(size_t maxArraySize,
 
 void ScriptManager::clearMemoryLimits() { _interpreter->clearMemoryLimits(); }
 
+void ScriptManager::setVMEnabled(bool enabled) {
+  _interpreter->setVMEnabled(enabled);
+}
+
+bool ScriptManager::isVMEnabled() const { return _interpreter->isVMEnabled(); }
+
 void ScriptManager::setDebugHook(Interpreter::DebugHook cb) {
   _interpreter->setDebugHook(std::move(cb));
 }

@@ -20,6 +20,9 @@ DataType floatingResultType(DataType a, DataType b) {
 } // namespace
 
 TypeInfo ValueHelper::getType(const Value &val) {
+  if (std::holds_alternative<NullValue>(val)) {
+    return TypeInfo(DataType::NIL);
+  }
   if (std::holds_alternative<ArrayPtr>(val)) {
     ArrayPtr arr = std::get<ArrayPtr>(val);
     if (!arr) {
@@ -144,6 +147,9 @@ std::string ValueHelper::typeToString(const TypeInfo &type) {
   case DataType::VOID:
     base = "void";
     break;
+  case DataType::NIL:
+    base = "null";
+    break;
   }
   if (type.isMap) {
     std::string valStr =
@@ -185,6 +191,8 @@ TypeInfo ValueHelper::stringToType(const std::string &str) {
     return TypeInfo(DataType::CHAR);
   if (str == "void")
     return TypeInfo(DataType::VOID);
+  if (str == "null")
+    return TypeInfo(DataType::NIL);
   throw std::runtime_error("Unknown type: " + str);
 }
 
@@ -209,6 +217,8 @@ int64_t ValueHelper::toInt64(const Value &val) {
           throw std::runtime_error("Cannot convert struct to int64");
         } else if constexpr (std::is_same_v<T, FuncPtr>) {
           throw std::runtime_error("Cannot convert function to int64");
+        } else if constexpr (std::is_same_v<T, NullValue>) {
+          throw std::runtime_error("Cannot convert null to int64");
         } else {
           return static_cast<int64_t>(arg);
         }
@@ -237,6 +247,8 @@ uint64_t ValueHelper::toUInt64(const Value &val) {
           throw std::runtime_error("Cannot convert struct to uint64");
         } else if constexpr (std::is_same_v<T, FuncPtr>) {
           throw std::runtime_error("Cannot convert function to uint64");
+        } else if constexpr (std::is_same_v<T, NullValue>) {
+          throw std::runtime_error("Cannot convert null to uint64");
         } else {
           return static_cast<uint64_t>(arg);
         }
@@ -263,6 +275,8 @@ double ValueHelper::toDouble(const Value &val) {
           throw std::runtime_error("Cannot convert struct to double");
         } else if constexpr (std::is_same_v<T, FuncPtr>) {
           throw std::runtime_error("Cannot convert function to double");
+        } else if constexpr (std::is_same_v<T, NullValue>) {
+          throw std::runtime_error("Cannot convert null to double");
         } else {
           return static_cast<double>(arg);
         }
@@ -288,6 +302,8 @@ bool ValueHelper::toBool(const Value &val) {
           return arg != nullptr;
         } else if constexpr (std::is_same_v<T, MapPtr>) {
           return arg != nullptr;
+        } else if constexpr (std::is_same_v<T, NullValue>) {
+          return false;
         } else {
           return arg != 0;
         }
@@ -363,6 +379,8 @@ std::string toStringDepth(const Value &val, int depth) {
             return "<fn " + arg->displayName + ">";
           }
           return std::string("<fn>");
+        } else if constexpr (std::is_same_v<T, NullValue>) {
+          return "null";
         } else {
           return std::to_string(arg);
         }
@@ -560,6 +578,14 @@ int compareValues(const Value &a, const Value &b, int depth) {
     throw std::runtime_error(
         "Comparison depth limit exceeded (cyclic structure?)");
   }
+  bool aNull = std::holds_alternative<NullValue>(a);
+  bool bNull = std::holds_alternative<NullValue>(b);
+  if (aNull || bNull) {
+    if (aNull && bNull) {
+      return 0;
+    }
+    throw std::runtime_error("Cannot order null against non-null");
+  }
   bool aArr = ValueHelper::isArray(a);
   bool bArr = ValueHelper::isArray(b);
   if (aArr && bArr) {
@@ -685,6 +711,12 @@ bool equalsDepth(const Value &a, const Value &b, int depth) {
   if (depth > 64) {
     throw std::runtime_error(
         "Equality depth limit exceeded (cyclic structure?)");
+  }
+  // null == null; null == anything else is false
+  bool aNull = std::holds_alternative<NullValue>(a);
+  bool bNull = std::holds_alternative<NullValue>(b);
+  if (aNull || bNull) {
+    return aNull && bNull;
   }
   TypeInfo ta = ValueHelper::getType(a);
   TypeInfo tb = ValueHelper::getType(b);
@@ -1083,6 +1115,12 @@ std::string ValueHelper::structTypeName(const Value &val) {
   return sv ? sv->typeName : "";
 }
 
+bool ValueHelper::isNull(const Value &val) {
+  return std::holds_alternative<NullValue>(val);
+}
+
+Value ValueHelper::nullValue() { return Value{NullValue{}}; }
+
 Value ValueHelper::convertElement(const Value &val, const TypeInfo &target) {
   if (target.isArray) {
     if (!isArray(val)) {
@@ -1139,6 +1177,8 @@ Value ValueHelper::convertElement(const Value &val, const TypeInfo &target) {
     return createValue(t, toString(val));
   case DataType::BOOL:
     return createValue(t, toBool(val));
+  case DataType::NIL:
+    return val; // untyped (null-typed) array elements pass through
   case DataType::VOID:
     throw std::runtime_error("Cannot store void elements in array");
   }

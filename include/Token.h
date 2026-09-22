@@ -118,6 +118,7 @@ enum class TokenType {
     DOT,            // .
     
     // Special
+    NUL,            // null
     END_OF_FILE,
     UNKNOWN
 };

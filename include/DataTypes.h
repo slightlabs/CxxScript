@@ -24,7 +24,8 @@ enum class DataType {
     DOUBLE,
     STRING,
     BOOL,
-    VOID
+    VOID,
+    NIL
 };
 
 struct TypeInfo {
@@ -159,6 +160,18 @@ using StructPtr = std::shared_ptr<StructValue>;
 using FuncPtr = std::shared_ptr<FunctionValue>;
 
 // Variant to hold any script value
+// The `null` literal's value tag. A distinct empty struct rather than
+// std::nullptr_t so std::variant's ordered comparison (used for
+// map<Value, Value> keys) stays well-formed.
+struct NullValue {
+  friend constexpr bool operator==(NullValue, NullValue) { return true; }
+  friend constexpr bool operator!=(NullValue, NullValue) { return false; }
+  friend constexpr bool operator<(NullValue, NullValue) { return false; }
+  friend constexpr bool operator<=(NullValue, NullValue) { return true; }
+  friend constexpr bool operator>(NullValue, NullValue) { return false; }
+  friend constexpr bool operator>=(NullValue, NullValue) { return true; }
+};
+
 using Value = std::variant<
     char,
     int8_t,
@@ -176,7 +189,8 @@ using Value = std::variant<
     ArrayPtr,
     MapPtr,
     StructPtr,
-    FuncPtr
+    FuncPtr,
+    NullValue
 >;
 
 struct ArrayValue {
@@ -266,6 +280,10 @@ public:
     // Struct helpers
     static bool isStruct(const Value &val);
     static std::string structTypeName(const Value &val);
+
+    // `null` literal value (variant alternative std::nullptr_t)
+    static bool isNull(const Value &val);
+    static Value nullValue();
 };
 
 } // namespace Script

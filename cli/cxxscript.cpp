@@ -15,7 +15,9 @@
 //   .load <file>     load a script file's procedures
 //   .reset           discard all state and start fresh
 
+#include "DapServer.h"
 #include "Formatter.h"
+#include "LspServer.h"
 #include "ScriptManager.h"
 #include <algorithm>
 #include <cstdlib>
@@ -36,6 +38,9 @@ namespace {
 // (8 MB reserve on MSVC, ~8 MB default elsewhere) so deep script recursion
 // reports a fatal error instead of crashing the process.
 constexpr size_t kStackBudget = 6 * 1024 * 1024;
+
+// --vm global flag: execute via the bytecode VM instead of the tree-walker.
+bool g_useVM = false;
 
 void printErrors(const std::vector<CompilationError> &errors) {
   for (const auto &e : errors) {
@@ -73,8 +78,12 @@ int runFile(const std::string &file, const std::string &proc,
             const std::vector<std::string> &argStrings) {
   ScriptManager manager;
   manager.setExecutionLimits(0, 0, kStackBudget);
+  manager.setVMEnabled(g_useVM);
   std::vector<CompilationError> errors;
-  if (!manager.loadScriptFile(file, errors)) {
+  bool loaded = file.size() >= 8 && file.compare(file.size() - 8, 8, ".scriptc") == 0
+                    ? manager.loadCompiled(file, errors)
+                    : manager.loadScriptFile(file, errors);
+  if (!loaded) {
     printErrors(errors);
     return 1;
   }
@@ -505,6 +514,7 @@ int repl() {
 
   auto manager = std::make_unique<ScriptManager>();
   manager->setExecutionLimits(0, 0, kStackBudget);
+  manager->setVMEnabled(g_useVM);
   std::string line;
 
   while (true) {
@@ -551,6 +561,7 @@ int repl() {
       if (trimmed == ".reset") {
         manager = std::make_unique<ScriptManager>();
         manager->setExecutionLimits(0, 0, kStackBudget);
+        manager->setVMEnabled(g_useVM);
         std::cout << "state cleared\n";
         continue;
       }
@@ -618,13 +629,33 @@ void usage(const char *argv0) {
       << "  " << argv0 << " check <file>...\n"
       << "  " << argv0 << " eval '<statements>'\n"
       << "  " << argv0 << " fmt <file>... [-w]   (print or rewrite)\n"
+      << "  " << argv0 << " compile <file> [-o out.scriptc]  (bytecode artifact)\n"
       << "  " << argv0 << " debug <file> [proc] [args...]\n"
-      << "  " << argv0 << "               (interactive REPL)\n";
+      << "  " << argv0 << " lsp              (Language Server Protocol on stdio)\n"
+      << "  " << argv0 << " dap              (Debug Adapter Protocol on stdio)\n"
+      << "  " << argv0 << "               (interactive REPL)\n"
+      << "Global flags:\n"
+      << "  --vm             execute via the bytecode VM instead of the tree-walker\n";
 }
 
 } // namespace
 
 int main(int argc, char **argv) {
+  // Strip global flags (currently just --vm) before dispatching commands;
+  // argv[0] stays the program name so downstream indexing is unchanged.
+  std::vector<char *> filtered;
+  filtered.push_back(argv[0]);
+  for (int i = 1; i < argc; ++i) {
+    if (std::strcmp(argv[i], "--vm") == 0) {
+      g_useVM = true;
+    } else {
+      filtered.push_back(argv[i]);
+    }
+  }
+  filtered.push_back(nullptr);
+  argc = static_cast<int>(filtered.size()) - 1;
+  argv = filtered.data();
+
   if (argc < 2) {
     return repl();
   }
@@ -656,6 +687,7 @@ int main(int argc, char **argv) {
       return 3;
     }
     ScriptManager manager;
+    manager.setVMEnabled(g_useVM);
     Value result;
     std::string error;
     if (!manager.evaluateSnippet(argv[2], "<eval>", result, error)) {
@@ -695,6 +727,40 @@ int main(int argc, char **argv) {
     if (argc > 4)
       args.assign(argv + 4, argv + argc);
     return debugFile(file, proc, args);
+  }
+  if (cmd == "compile") {
+    if (argc < 3) {
+      usage(argv[0]);
+      return 3;
+    }
+    std::string file = argv[2];
+    std::string out = file;
+    if (out.size() >= 7 && out.compare(out.size() - 7, 7, ".script") == 0) {
+      out += "c";
+    } else {
+      out += ".scriptc";
+    }
+    for (int i = 3; i + 1 < argc; ++i) {
+      if (std::string(argv[i]) == "-o") {
+        out = argv[i + 1];
+      }
+    }
+    ScriptManager manager;
+    std::vector<CompilationError> errors;
+    if (!manager.loadScriptFile(file, errors) ||
+        !manager.saveCompiled(file, out, errors)) {
+      printErrors(errors);
+      return 1;
+    }
+    printErrors(errors); // warnings
+    std::cout << out << "\n";
+    return 0;
+  }
+  if (cmd == "lsp") {
+    return Script::runLanguageServer(std::cin, std::cout);
+  }
+  if (cmd == "dap") {
+    return Script::runDebugAdapter(std::cin, std::cout);
   }
   if (cmd == "repl") {
     return repl();

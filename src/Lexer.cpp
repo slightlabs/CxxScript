@@ -48,6 +48,7 @@ void Lexer::initKeywords() {
   _keywords["return"] = TokenType::RETURN;
   _keywords["true"] = TokenType::TRUE;
   _keywords["false"] = TokenType::FALSE;
+  _keywords["null"] = TokenType::NUL;
 }
 
 std::vector<Token> Lexer::tokenize() {

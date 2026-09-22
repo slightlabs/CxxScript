@@ -80,9 +80,20 @@ struct ExternalBinding {
 using ExternalVariableGetter = std::function<Value()>;
 using ExternalVariableSetter = std::function<void(const Value &)>;
 
+class VM;
+
 class Interpreter {
 public:
   Interpreter();
+  ~Interpreter();
+
+  // Engine selection: when enabled, compilable code runs on the bytecode
+  // VM instead of the tree-walking interpreter (same semantics).
+  void setVMEnabled(bool enabled);
+  bool isVMEnabled() const;
+  // Direct VM access for tooling (compiled-artifact save/load). Creates the
+  // VM on demand without changing the engine-selection flag.
+  VM *vm();
 
   // Register an external function by name
   void registerExternalFunction(const std::string &name,
@@ -182,6 +193,10 @@ public:
   // A top-level 'return' exits early and yields its value.
   Value executeStatements(const std::vector<StmtPtr> &statements);
 
+  // Tree-walker implementation of executeStatements (used when the VM is
+  // disabled or a snippet cannot be compiled).
+  Value executeStatementsImpl(const std::vector<StmtPtr> &statements);
+
   // Check if a procedure exists
   bool hasProcedure(const std::string &name) const;
 
@@ -211,6 +226,7 @@ public:
 
 private:
   friend class Builtins;
+  friend class VM;
 
   // Environment for variables (stack of scopes)
   class Environment {
@@ -221,6 +237,8 @@ private:
     Value get(const std::string &name) const;
     void assign(const std::string &name, const Value &value);
     bool has(const std::string &name) const;
+    // Single-walk lookup: fills `out` and returns true if the name resolves.
+    bool tryGet(const std::string &name, Value &out) const;
 
     void enterScope();
     void exitScope();
@@ -263,6 +281,12 @@ private:
   size_t _maxSteps = 0;
   size_t _maxStackBytes = 0;
   const char *_stackBase = nullptr; // set at top-level execution entry
+  // Synthetic native-stack usage charged to bytecode-VM frames. VM calls are
+  // heap-allocated and consume no real stack, so each frame is billed a fixed
+  // estimate (matching the tree-walker's measured ~4 KB/frame) to keep the
+  // maxStackBytes guardrail meaningful on either engine.
+  size_t _vmChargedStack = 0;
+  static constexpr size_t kVmFrameStackCost = 4096;
   size_t _currentCallDepth = 0;
   size_t _currentSteps = 0;
   // Bounded extra steps granted while a `finally` block runs, so cleanup
@@ -279,6 +303,8 @@ private:
   std::mt19937_64 _rng;
   int _callSiteLine = 0;   // source line of the call that entered the
   int _callSiteColumn = 0; // current procedure (0 = invoked by host)
+  std::unique_ptr<VM> _vm;
+  bool _vmEnabled = false;
 
   // Evaluation methods
   Value evaluate(ExprPtr expr);

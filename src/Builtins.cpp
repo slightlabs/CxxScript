@@ -1,7 +1,9 @@
 #include "Builtins.h"
 #include "Interpreter.h"
+#include "Json.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
 
 namespace Script {
@@ -21,6 +23,15 @@ void Builtins::rethrowCallError(Interpreter &in, CallExpr *e,
 
 bool Builtins::isBuiltin(const std::string &name) {
   return table().find(name) != table().end();
+}
+
+std::vector<std::string> Builtins::builtinNames() {
+  std::vector<std::string> names;
+  names.reserve(table().size());
+  for (const auto &[name, _] : table()) {
+    names.push_back(name);
+  }
+  return names;
 }
 
 Value Builtins::call(Interpreter &interp, const std::string &name,
@@ -73,6 +84,10 @@ const std::unordered_map<std::string, Builtins::Handler> &Builtins::table() {
       {"toChar", &bToChar},   {"parseInt", &bParseInt},
       {"parseDouble", &bParseDouble}, {"typeof", &bTypeof},
       {"isArray", &bIsArray}, {"isMap", &bIsMap},
+      {"isNull", &bIsNull},
+      // JSON
+      {"jsonParse", &bJsonParse},
+      {"jsonStringify", &bJsonStringify},
       // Output / control
       {"print", &bPrint},     {"println", &bPrintln},
       {"error", &bError},     {"assert", &bAssert},
@@ -901,6 +916,156 @@ Value Builtins::bTypeof(Interpreter &in, CallExpr *e) {
 Value Builtins::bIsArray(Interpreter &in, CallExpr *e) {
   arity(in, e, "isArray", 1, 1);
   return ValueHelper::isArray(arg(in, e, 0));
+}
+
+Value Builtins::bIsNull(Interpreter &in, CallExpr *e) {
+  arity(in, e, "isNull", 1, 1);
+  return ValueHelper::isNull(arg(in, e, 0));
+}
+
+// ---------------------------------------------------------------------------
+// JSON
+// ---------------------------------------------------------------------------
+
+namespace {
+
+Value jsonToValue(const Json &j) {
+  switch (j.kind()) {
+  case Json::Kind::Null:
+    return NullValue{};
+  case Json::Kind::Bool:
+    return j.asBool();
+  case Json::Kind::Int:
+    return j.asInt();
+  case Json::Kind::Double:
+    return j.asDouble();
+  case Json::Kind::String:
+    return j.asString();
+  case Json::Kind::Array: {
+    std::vector<Value> elems;
+    elems.reserve(j.size());
+    for (const Json &el : j.asArray()) {
+      elems.push_back(jsonToValue(el));
+    }
+    // Same convention as array literals: element type from first element.
+    TypeInfo elemType(DataType::VOID);
+    for (const auto &el : elems) {
+      TypeInfo t = ValueHelper::getType(el);
+      if (t.baseType != DataType::NIL) {
+        elemType = t;
+        break;
+      }
+    }
+    return ValueHelper::createArray(elemType, elems);
+  }
+  case Json::Kind::Object: {
+    auto m = ValueHelper::createMap(TypeInfo(DataType::STRING),
+                                    TypeInfo(DataType::VOID));
+    TypeInfo valType(DataType::VOID);
+    for (const auto &[k, v] : j.asObject()) {
+      Value cv = jsonToValue(v);
+      if (valType.baseType == DataType::VOID && !ValueHelper::isNull(cv)) {
+        valType = ValueHelper::getType(cv);
+      }
+      m->entries[k] = cv;
+    }
+    m->valueType = valType;
+    return m;
+  }
+  }
+  return NullValue{};
+}
+
+Json valueToJson(const Value &v) {
+  if (ValueHelper::isNull(v)) {
+    return Json(nullptr);
+  }
+  if (auto *b = std::get_if<bool>(&v)) {
+    return Json(*b);
+  }
+  if (auto *c = std::get_if<char>(&v)) {
+    return Json(std::string(1, *c));
+  }
+  if (auto *s = std::get_if<std::string>(&v)) {
+    return Json(*s);
+  }
+  if (auto *u = std::get_if<uint64_t>(&v)) {
+    if (*u > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      return Json(static_cast<double>(*u));
+    }
+    return Json(static_cast<int64_t>(*u));
+  }
+  if (std::holds_alternative<uint8_t>(v) ||
+      std::holds_alternative<uint16_t>(v) ||
+      std::holds_alternative<uint32_t>(v)) {
+    return Json(static_cast<int64_t>(ValueHelper::toUInt64(v)));
+  }
+  if (auto *d = std::get_if<double>(&v)) {
+    return Json(*d);
+  }
+  if (auto *f = std::get_if<float>(&v)) {
+    return Json(static_cast<double>(*f));
+  }
+  if (std::holds_alternative<int8_t>(v) || std::holds_alternative<int16_t>(v) ||
+      std::holds_alternative<int32_t>(v) || std::holds_alternative<int64_t>(v)) {
+    return Json(ValueHelper::toInt64(v));
+  }
+  if (auto *arr = std::get_if<ArrayPtr>(&v)) {
+    Json::Array out;
+    if (*arr) {
+      for (const Value &el : (*arr)->elements) {
+        out.push_back(valueToJson(el));
+      }
+    }
+    return Json(std::move(out));
+  }
+  if (auto *mp = std::get_if<MapPtr>(&v)) {
+    Json::Object out;
+    if (*mp) {
+      for (const auto &[k, val] : (*mp)->entries) {
+        out[ValueHelper::toString(k)] = valueToJson(val);
+      }
+    }
+    return Json(std::move(out));
+  }
+  if (auto *sv = std::get_if<StructPtr>(&v)) {
+    Json::Object out;
+    if (*sv) {
+      for (const auto &name : (*sv)->fieldOrder) {
+        auto it = (*sv)->fields.find(name);
+        if (it != (*sv)->fields.end()) {
+          out[name] = valueToJson(it->second);
+        }
+      }
+    }
+    return Json(std::move(out));
+  }
+  throw std::runtime_error("Cannot serialize function values to JSON");
+}
+
+} // namespace
+
+Value Builtins::bJsonParse(Interpreter &in, CallExpr *e) {
+  arity(in, e, "jsonParse", 1, 1);
+  std::string text = str(in, e, 0);
+  try {
+    return jsonToValue(Json::parse(text));
+  } catch (const JsonError &err) {
+    throw in.runtimeError(std::string("jsonParse: ") + err.what(), e->line,
+                          e->column);
+  }
+}
+
+Value Builtins::bJsonStringify(Interpreter &in, CallExpr *e) {
+  arity(in, e, "jsonStringify", 1, 2);
+  Value v = arg(in, e, 0);
+  int64_t indent = e->arguments.size() == 2 ? integer(in, e, 1) : -1;
+  try {
+    return valueToJson(v).dump(static_cast<int>(indent));
+  } catch (const std::runtime_error &err) {
+    throw in.runtimeError(std::string("jsonStringify: ") + err.what(), e->line,
+                          e->column);
+  }
 }
 
 // ---------------------------------------------------------------------------

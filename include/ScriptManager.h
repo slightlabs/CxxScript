@@ -3,6 +3,7 @@
 #include "Interpreter.h"
 #include "Lexer.h"
 #include "Parser.h"
+#include "Reflection.h"
 #include <initializer_list>
 #include <memory>
 #include <sstream>
@@ -62,6 +63,16 @@ public:
   bool executeProcedure(const std::string &procedureName,
                         const std::vector<Value> &arguments, Value &returnValue,
                         std::string &errorMessage);
+
+  // Typed convenience wrapper over executeProcedure:
+  //   int64_t n = manager.callProcedure<int64_t>("fib", 20);
+  //   manager.callProcedure<void>("reset");
+  // Arguments are converted with the same rules as external-function
+  // parameters; the return value is converted with the same rules as
+  // external-function returns. Throws std::runtime_error if the call fails
+  // or the return type is incompatible.
+  template <typename Ret, typename... Args>
+  Ret callProcedure(const std::string &procedureName, const Args &...args);
 
   // Evaluate a snippet of top-level statements (REPL support). Variables
   // declared at top level persist as globals across calls; a top-level
@@ -184,6 +195,13 @@ public:
   // Per-statement debug hook (see Interpreter::DebugContext). nullptr clears.
   void setDebugHook(Interpreter::DebugHook cb);
 
+  // Engine selection: run procedures/snippets on the bytecode VM (true) or
+  // the tree-walking interpreter (false, default). Semantics are identical;
+  // the VM compiles procedure bodies to bytecode on first use and falls back
+  // to the tree-walker for any construct it cannot compile.
+  void setVMEnabled(bool enabled);
+  bool isVMEnabled() const;
+
   // --- Sandbox controls for untrusted scripts ---
   // When import roots are set, `import` paths must resolve inside one of
   // them. When empty (default), imports may resolve anywhere.
@@ -196,6 +214,20 @@ public:
   void disableBuiltin(const std::string &name);
   void enableBuiltin(const std::string &name);
   bool isBuiltinEnabled(const std::string &name) const;
+
+  // --- Compiled artifacts (.scriptc) ---
+  // Serialize the bytecode-compiled form of a previously loaded script file
+  // to `outPath`. The artifact contains the procedures, structs (with
+  // methods), and enums declared in that file. Compilation uses the
+  // bytecode VM backend, so saving enables the VM on this manager and
+  // fails for procedures the compiler cannot cover.
+  bool saveCompiled(const std::string &sourceFile, const std::string &outPath,
+                    std::vector<CompilationError> &errors);
+  // Load a .scriptc artifact produced by saveCompiled. Registers its
+  // procedures/structs/enums and enables the VM (compiled bodies carry no
+  // AST and require the VM to run).
+  bool loadCompiled(const std::string &path,
+                    std::vector<CompilationError> &errors);
 
   // --- Parsed-AST cache ---
   // When enabled, successfully parsed files are cached keyed by canonical
@@ -252,7 +284,8 @@ private:
 
 namespace detail {
 
-// Types usable as external-function arguments/returns.
+// Types usable as external-function arguments/returns: scalars, strings,
+// arrays, and host structs bound via StructCodecOf (see Reflection.h).
 template <typename T>
 struct IsSupportedType
     : std::bool_constant<
@@ -260,10 +293,13 @@ struct IsSupportedType
           std::is_same<T, ArrayPtr>::value ||
           std::is_same<T, bool>::value || std::is_same<T, char>::value ||
           std::is_same<T, float>::value || std::is_same<T, double>::value ||
-          (std::is_integral<T>::value && !std::is_same<T, bool>::value)> {};
+          (std::is_integral<T>::value && !std::is_same<T, bool>::value) ||
+          HasStructCodec<std::decay_t<T>>::value> {};
 
 template <typename T> inline Value toValue(const T &v) {
-  if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, ArrayPtr> ||
+  if constexpr (HasStructCodec<std::decay_t<T>>::value) {
+    return structToValue(v);
+  } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, ArrayPtr> ||
                 std::is_same_v<T, bool> || std::is_same_v<T, char> ||
                 std::is_same_v<T, float> || std::is_same_v<T, double> ||
                 std::is_same_v<T, int8_t> || std::is_same_v<T, uint8_t> ||
@@ -283,28 +319,34 @@ template <typename T> inline Value toValue(const T &v) {
   }
 }
 
-template <typename T> inline T fromValue(const Value &v) {
-  if constexpr (std::is_same_v<T, std::string>) {
+// Decays T so bound-struct arguments written as `const Point&` return by
+// value (a codec conversion produces a fresh T — returning a reference
+// would dangle).
+template <typename T> inline std::decay_t<T> fromValue(const Value &v) {
+  using U = std::decay_t<T>;
+  if constexpr (HasStructCodec<U>::value) {
+    return structFromValue<U>(v);
+  } else if constexpr (std::is_same_v<U, std::string>) {
     return ValueHelper::toString(v);
-  } else if constexpr (std::is_same_v<T, ArrayPtr>) {
+  } else if constexpr (std::is_same_v<U, ArrayPtr>) {
     if (!ValueHelper::isArray(v)) {
       throw std::runtime_error("Expected array argument");
     }
     return std::get<ArrayPtr>(v);
-  } else if constexpr (std::is_same_v<T, bool>) {
+  } else if constexpr (std::is_same_v<U, bool>) {
     return ValueHelper::toBool(v);
-  } else if constexpr (std::is_same_v<T, char>) {
+  } else if constexpr (std::is_same_v<U, char>) {
     return static_cast<char>(ValueHelper::toInt64(v));
-  } else if constexpr (std::is_same_v<T, float>) {
+  } else if constexpr (std::is_same_v<U, float>) {
     return static_cast<float>(ValueHelper::toDouble(v));
-  } else if constexpr (std::is_same_v<T, double>) {
+  } else if constexpr (std::is_same_v<U, double>) {
     return ValueHelper::toDouble(v);
-  } else if constexpr (std::is_integral_v<T> && std::is_unsigned_v<T>) {
-    return static_cast<T>(ValueHelper::toUInt64(v));
-  } else if constexpr (std::is_integral_v<T>) {
-    return static_cast<T>(ValueHelper::toInt64(v));
+  } else if constexpr (std::is_integral_v<U> && std::is_unsigned_v<U>) {
+    return static_cast<U>(ValueHelper::toUInt64(v));
+  } else if constexpr (std::is_integral_v<U>) {
+    return static_cast<U>(ValueHelper::toInt64(v));
   } else {
-    static_assert(IsSupportedType<T>::value, "Unsupported argument type");
+    static_assert(IsSupportedType<U>::value, "Unsupported argument type");
   }
 }
 
@@ -320,6 +362,24 @@ Value invokeTyped(const std::function<Ret(Args...)> &fn,
 }
 
 } // namespace detail
+
+template <typename Ret, typename... Args>
+Ret ScriptManager::callProcedure(const std::string &procedureName,
+                                 const Args &...args) {
+  std::vector<Value> argv;
+  argv.reserve(sizeof...(Args));
+  (argv.push_back(detail::toValue(args)), ...);
+  Value ret;
+  std::string error;
+  if (!executeProcedure(procedureName, argv, ret, error)) {
+    throw std::runtime_error(error.empty() ? "callProcedure failed: " +
+                                                 procedureName
+                                           : error);
+  }
+  if constexpr (!std::is_same_v<Ret, void>) {
+    return detail::fromValue<Ret>(ret);
+  }
+}
 
 template <typename Ret, typename... Args>
 typename std::enable_if<!std::is_same<Ret, Value>::value, void>::type

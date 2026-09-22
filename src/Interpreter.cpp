@@ -1,4 +1,6 @@
 #include "Interpreter.h"
+#include "VM.h"
+#include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <sstream>
@@ -119,6 +121,50 @@ void Interpreter::Environment::assign(const std::string &name,
   throw std::runtime_error("Undefined variable: " + name);
 }
 
+bool Interpreter::Environment::tryGet(const std::string &name,
+                                      Value &out) const {
+  auto cacheIt = _lookupCache.find(name);
+  if (cacheIt != _lookupCache.end()) {
+    size_t idx = cacheIt->second;
+    if (idx == GLOBAL) {
+      auto gIt = _globals.find(name);
+      if (gIt != _globals.end()) {
+        out = gIt->second;
+        return true;
+      }
+      _lookupCache.erase(cacheIt);
+    } else if (idx < _scopes.size()) {
+      auto sIt = _scopes[idx].find(name);
+      if (sIt != _scopes[idx].end()) {
+        out = sIt->second;
+        return true;
+      }
+      _lookupCache.erase(cacheIt);
+    }
+  }
+
+  for (size_t i = _scopes.size(); i-- > 0;) {
+    auto found = _scopes[i].find(name);
+    if (found != _scopes[i].end()) {
+      _lookupCache[name] = i;
+      out = found->second;
+      return true;
+    }
+  }
+
+  auto gIt = _globals.find(name);
+  if (gIt != _globals.end()) {
+    _lookupCache[name] = GLOBAL;
+    out = gIt->second;
+    return true;
+  }
+
+  if (_parent) {
+    return _parent->tryGet(name, out);
+  }
+  return false;
+}
+
 bool Interpreter::Environment::has(const std::string &name) const {
   auto cacheIt = _lookupCache.find(name);
   if (cacheIt != _lookupCache.end()) {
@@ -190,7 +236,32 @@ Interpreter::Interpreter()
     : _globalEnv(nullptr), _currentEnv(&_globalEnv), _currentProcedure(""),
       _currentFile(""), _callCacheVersion(1),
       _outputCallback([](const std::string &s) { std::cout << s; }),
-      _rng(std::random_device{}()) {}
+      _rng(std::random_device{}()) {
+  // CXXSCRIPT_VM=1 selects the bytecode engine for all executions; mainly
+  // used to run the whole test suite through the VM for parity checking.
+  const char *vm = std::getenv("CXXSCRIPT_VM");
+  if (vm && vm[0] == '1' && vm[1] == '\0') {
+    setVMEnabled(true);
+  }
+}
+
+Interpreter::~Interpreter() = default;
+
+void Interpreter::setVMEnabled(bool enabled) {
+  if (enabled && !_vm) {
+    _vm = std::make_unique<VM>(*this);
+  }
+  _vmEnabled = enabled;
+}
+
+bool Interpreter::isVMEnabled() const { return _vmEnabled; }
+
+VM *Interpreter::vm() {
+  if (!_vm) {
+    _vm = std::make_unique<VM>(*this);
+  }
+  return _vm.get();
+}
 
 void Interpreter::registerExternalFunction(const std::string &name,
                                            ExternalFunctionCallback callback) {
@@ -519,7 +590,16 @@ Value Interpreter::executeProcedure(const std::string &name,
   }
 }
 
-Value Interpreter::executeStatements(const std::vector<StmtPtr> &statements) {
+Value Interpreter::executeStatements(
+    const std::vector<StmtPtr> &statements) {
+  if (_vmEnabled) {
+    return _vm->runSnippet(statements);
+  }
+  return executeStatementsImpl(statements);
+}
+
+Value Interpreter::executeStatementsImpl(
+    const std::vector<StmtPtr> &statements) {
   bool topLevel = !_executionActive;
   char stackMarker;
   if (topLevel) {
@@ -572,6 +652,15 @@ Value Interpreter::executeStatements(const std::vector<StmtPtr> &statements) {
 
 Value Interpreter::executeProcedure(ProcedureDeclPtr proc,
                                     const std::vector<Value> &arguments) {
+  // A proc with compiled bytecode (VM-enabled compile or a loaded .scriptc
+  // artifact, which has no AST body) always runs on the VM.
+  if (proc->vmFunc || (_vmEnabled && _vm->compileProcedure(proc))) {
+    if (!_vm) {
+      _vm = std::make_unique<VM>(*this);
+    }
+    return _vm->callProc(proc, std::vector<Value>(arguments), proc->line,
+                         proc->column, nullptr);
+  }
   std::string file;
   auto fileIt = _procedureFiles.find(proc.get());
   if (fileIt != _procedureFiles.end()) {
@@ -720,11 +809,25 @@ Value Interpreter::callFunctionValue(const FuncPtr &fn,
   if (!fn) {
     throw runtimeError("Cannot call a null function value", line, column);
   }
+  if (fn->vmFunc) {
+    if (!_vm) {
+      _vm = std::make_unique<VM>(*this);
+    }
+    return _vm->callFunction(fn, std::vector<Value>(args), line, column);
+  }
   if (!fn->procs.empty()) {
     ProcedureDeclPtr proc =
         fn->procs.size() == 1
             ? fn->procs.front()
             : resolveOverload(fn->displayName, fn->procs, args, line, column);
+    // Bytecode-only procedure (e.g. from a .scriptc artifact): no AST body
+    // exists, so it must run on the VM even when the engine flag is off.
+    if (proc->vmFunc) {
+      if (!_vm) {
+        _vm = std::make_unique<VM>(*this);
+      }
+      return _vm->callFunction(fn, std::vector<Value>(args), line, column);
+    }
     std::string file;
     auto fileIt = _procedureFiles.find(proc.get());
     if (fileIt != _procedureFiles.end()) {
@@ -779,8 +882,9 @@ Value Interpreter::invokeCallable(
     // process stack (direction-agnostic comparison).
     char marker;
     const char *cur = &marker;
-    size_t used = cur > _stackBase ? static_cast<size_t>(cur - _stackBase)
-                                   : static_cast<size_t>(_stackBase - cur);
+    size_t used = (cur > _stackBase ? static_cast<size_t>(cur - _stackBase)
+                                    : static_cast<size_t>(_stackBase - cur)) +
+                  _vmChargedStack;
     if (used > _maxStackBytes) {
       restoreFrame();
       throw RuntimeError("Native stack limit exceeded (" +
@@ -1208,7 +1312,8 @@ Value Interpreter::evaluateMapLiteral(MapLiteralExpr *expr) {
       keyType = ValueHelper::getType(key);
       valueType = ValueHelper::getType(val);
       if (keyType.isArray || keyType.isMap || keyType.isStruct ||
-          keyType.baseType == DataType::VOID) {
+          keyType.baseType == DataType::VOID ||
+          keyType.baseType == DataType::NIL) {
         throw runtimeError("Map keys must be scalar values",
                            kv.first->line, kv.first->column);
       }
@@ -1623,6 +1728,8 @@ Value Interpreter::defaultValue(const TypeInfo &type) {
     return false;
   case DataType::CHAR:
     return static_cast<char>(0);
+  case DataType::NIL:
+    return NullValue{};
   case DataType::VOID:
     return static_cast<int32_t>(0);
   }
@@ -2496,6 +2603,16 @@ Value Interpreter::convertToType(const Value &val, const TypeInfo &targetType) {
     return val;
   }
 
+  // null is only valid for `auto`/untyped targets — a typed slot cannot
+  // hold it (prevents `string s = null` silently becoming "null").
+  if (sourceType.baseType == DataType::NIL) {
+    if (targetType.baseType == DataType::NIL) {
+      return val;
+    }
+    throw std::runtime_error("Cannot assign null to '" +
+                             ValueHelper::typeToString(targetType) + "'");
+  }
+
   // Function-typed targets accept only function values, and when the
   // target's signature is fully specified the value's signature must be
   // call-compatible (same arity; each target param convertible to the
@@ -2645,6 +2762,8 @@ Value Interpreter::convertToType(const Value &val, const TypeInfo &targetType) {
     return ValueHelper::createValue(targetType.baseType, ValueHelper::toString(val));
   case DataType::BOOL:
     return ValueHelper::createValue(targetType.baseType, ValueHelper::toBool(val));
+  case DataType::NIL:
+    return val; // unreachable: null handled above
   case DataType::VOID:
     return val;
   }

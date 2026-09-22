@@ -4,6 +4,7 @@
 #include "DataTypes.h"
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace Script {
 
@@ -15,6 +16,8 @@ class Interpreter;
 class Builtins {
 public:
   static bool isBuiltin(const std::string &name);
+  // All registered builtin names (for tooling: LSP completion/hover).
+  static std::vector<std::string> builtinNames();
   static Value call(Interpreter &interp, const std::string &name,
                     CallExpr *expr);
 
@@ -102,6 +105,9 @@ private:
   static Value bParseDouble(Interpreter &, CallExpr *);
   static Value bTypeof(Interpreter &, CallExpr *);
   static Value bIsArray(Interpreter &, CallExpr *);
+  static Value bIsNull(Interpreter &, CallExpr *);
+  static Value bJsonParse(Interpreter &, CallExpr *);
+  static Value bJsonStringify(Interpreter &, CallExpr *);
   static Value bPrint(Interpreter &, CallExpr *);
   static Value bPrintln(Interpreter &, CallExpr *);
   static Value bError(Interpreter &, CallExpr *);

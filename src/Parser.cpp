@@ -1353,6 +1353,11 @@ ExprPtr Parser::primary() {
                                          previous().column);
   }
 
+  if (match({TokenType::NUL})) {
+    return std::make_shared<LiteralExpr>(NullValue{}, TypeInfo(DataType::NIL),
+                                         previous().line, previous().column);
+  }
+
   if (match({TokenType::LBRACKET})) {
     int line = previous().line;
     int column = previous().column;
